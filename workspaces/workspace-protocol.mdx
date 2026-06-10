@@ -1,5 +1,5 @@
 ---
-title: "The workspace: Protocol for Local Dependencies"
+title: "workspace: Protocol: Version Forms and Lockfile Behavior"
 sidebarTitle: "workspace: Protocol"
 description: "Reference for the workspace: protocol: the three version forms, how they become live symlinks, and how Ara records them in the lockfile."
 ---
@@ -119,7 +119,7 @@ node_modules/
 Because the symlink points directly at the source directory, any edit you make inside `packages/lib-a` is immediately visible to anything that `require`s or `import`s `lib-a`. You do not need to re-run `ara install` after editing member source files.
 
 <Warning>
-Ara's security scanner follows symlinks during analysis. Code inside symlinked workspace members is scanned the same way as any third-party package. If a member contains patterns like `eval()` or `child_process` usage, Ara will surface those findings and prompt you — even though the code is local.
+Ara's security scanner analyzes workspace members directly during install. After creating each symlink in `node_modules`, Ara runs the same pattern-based analysis against the member's source directory. If a member contains patterns like `eval()` or `child_process` usage, Ara will surface those findings and prompt you — even though the code is local.
 </Warning>
 
 ## Lockfile treatment

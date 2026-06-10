@@ -1,5 +1,5 @@
 ---
-title: "Manifest Format: package.json and ara.toml"
+title: "Manifest Files: package.json and ara.toml Reference"
 sidebarTitle: "Manifest"
 description: "Ara uses a hybrid manifest architecture: package.json as the primary source of truth, and an optional ara.toml for security policies and build profiles."
 ---
@@ -123,7 +123,7 @@ offline_first = true   # Prefer local cache; fail if a package isn't cached
 
 ### Complete `ara.toml` example
 
-The example below is drawn from the Ara test fixtures and reflects a typical security-conscious project:
+The example below reflects a typical security-conscious project:
 
 ```toml
 [security]
@@ -135,27 +135,6 @@ hermetic = true             # No network access during builds
 offline_first = true        # Prefer the local content store cache
 ```
 
-### Scripts-heavy project (from test fixtures)
-
-For projects that rely heavily on scripts, the `ara.toml` complements the scripts already declared in `package.json`:
-
-```toml
-[project]
-name = "scripts-app"
-version = "0.1.0"
-
-[scripts]
-build = "tsc --strict"
-test  = "vitest run --reporter verbose"
-lint  = "eslint src/ --fix"
-start = "node dist/index.js"
-"pre:build" = "rm -rf dist"
-```
-
-<Note>
-If `ara.toml` defines `[scripts]`, those entries are merged with scripts from `package.json`. However, Ara recommends keeping all scripts in `package.json` for ecosystem compatibility — `ara.toml` scripts are intended for advanced sandboxed profiles only.
-</Note>
-
 ---
 
 ## How the two files interact
@@ -164,7 +143,7 @@ If `ara.toml` defines `[scripts]`, those entries are merged with scripts from `p
 When Ara starts, it parses `package.json` first and builds the full manifest in memory. If `ara.toml` exists, it is layered on top:
 
 1. `package.json` provides: name, version, all dependency groups, scripts, and workspaces.
-2. `ara.toml` provides: security thresholds, build profiles, and any additional script entries.
+2. `ara.toml` provides: security thresholds and build profiles.
 3. Fields only in `package.json` (e.g. `description`, `license`, `main`) are preserved verbatim and written back when Ara modifies `package.json`.
 4. Neither file can override the other's dependency list — dependencies always live in `package.json`.
 </Accordion>

@@ -131,9 +131,9 @@ ara add https://cdn.example.com/packages/util-1.0.tar.gz
 
 ## Local Tarball (Local Path)
 
-The local path source reads an archive from the local filesystem. It shares the same format detection as the tarball URL source: any spec ending in `.tgz` or `.tar.gz` that does not start with a protocol is treated as a local file path.
+The local path source reads an archive directly from the local filesystem. It shares the same format detection as the tarball URL source: any spec ending in `.tgz` or `.tar.gz` that does not start with a protocol is treated as a local file path.
 
-Ara packages the directory into a gzip-compressed tar archive in memory and processes it through the same security scanner as all other sources. The path can be relative (`./downloads/my-pkg.tgz`) or absolute (`/tmp/build/my-pkg.tar.gz`).
+Ara reads the tarball file from disk and processes it through the same security scanner as all other sources. Ara reads `package.json` from inside the archive to discover the package name and version. The path can be relative (`./downloads/my-pkg.tgz`) or absolute (`/tmp/build/my-pkg.tar.gz`).
 
 **Spec format:**
 

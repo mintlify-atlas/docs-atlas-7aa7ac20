@@ -1,5 +1,5 @@
 ---
-title: "Managing Monorepos with Ara Workspaces"
+title: "Ara Monorepo Workspaces: Members, Globs, and Symlinks"
 sidebarTitle: "Overview"
 description: "Learn how Ara discovers and links workspace members in a monorepo, from glob patterns in package.json to live symlinks in node_modules."
 ---
@@ -51,7 +51,7 @@ members = ["packages/ui", "packages/server"]
 ```
 
 <Note>
-The `ara.toml` form takes explicit paths rather than globs — each entry must resolve directly to a package directory. Use `package.json` with glob patterns when your layout has many members under a shared directory.
+Both `ara.toml` and `package.json` workspace declarations support glob patterns — Ara expands every entry through the same glob engine. For example, `members = ["packages/*"]` in `ara.toml` will discover all immediate subdirectories of `packages/` just as it would in a `package.json` `workspaces` array.
 </Note>
 
 ## Directory structure

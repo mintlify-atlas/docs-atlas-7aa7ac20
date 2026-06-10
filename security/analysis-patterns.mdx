@@ -42,7 +42,7 @@ The table below lists all 18 patterns (17 code patterns + 1 `package.json` check
 | `install-scripts` | High | `preinstall`, `install`, or `postinstall` keys in `package.json` |
 | `fs-dangerous-write` | Medium | `fs.writeFile`, `fs.writeFileSync`, `fs.appendFile`, `fs.appendFileSync` |
 | `fs-dangerous-delete` | Medium | `fs.unlink`, `fs.unlinkSync`, `fs.rm`, `fs.rmSync`, `fs.rmdir`, `fs.rmdirSync` |
-| `credential-access` | Medium | `process.env` access for `NODE_*`, `AWS_*`, `GITHUB_*`, `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY` |
+| `credential-access` | Medium | `process.env` access for `NODE_*`, `AWS_*`, `GITHUB_*`, `TOKEN`, `SECRET`, `PASSWORD`, `PASS`, `API_KEY`, `API_SECRET`, `ACCESS_KEY`, `SECRET_KEY`, `PRIVATE_KEY` |
 | `alloc-unsafe` | Medium | `Buffer.allocUnsafe()`, `Buffer.allocUnsafeSlow()` — uninitialized memory allocation |
 | `dynamic-require` | Medium | `require()` with a non-literal argument |
 | `dynamic-import` | Medium | `import()` with a non-literal argument |
@@ -212,8 +212,12 @@ The table below lists all 18 patterns (17 code patterns + 1 `package.json` check
   process.env.AWS_SECRET_KEY   // AWS_ prefix
   process.env.GITHUB_TOKEN     // GITHUB_ prefix
   process.env.API_KEY          // API_KEY keyword
+  process.env.API_SECRET       // API_SECRET keyword
   process.env.SECRET           // SECRET keyword
+  process.env.SECRET_KEY       // SECRET_KEY keyword
   process.env.PASSWORD         // PASSWORD keyword
+  process.env.PASS             // PASS keyword
+  process.env.ACCESS_KEY       // ACCESS_KEY keyword
   process.env.PRIVATE_KEY      // PRIVATE_KEY keyword
 
   // Does NOT trigger

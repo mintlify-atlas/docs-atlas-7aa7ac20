@@ -29,12 +29,13 @@ Ara works with any existing `package.json` project — no migration step, no new
     Ara works through the install in several phases:
 
     1. **Parse** — reads `package.json` for dependencies, devDependencies, and workspace globs.
-    2. **Resolve** — applies Minimum Version Selection (MVS) to produce a deterministic dependency graph.
-    3. **Fetch** — downloads tarballs from the npm registry (or other sources).
-    4. **Analyze** — scans every JS/TS file in every fetched package against 17+ security patterns.
-    5. **Prompt** — asks for your approval on any findings (unless `--non-interactive`).
-    6. **Extract** — unpacks approved packages into `node_modules` and the content-addressed store.
-    7. **Lock** — writes `ara.lock` with the full resolved graph.
+    2. **Expand** — globs `workspaces` patterns and creates implicit deps for each discovered member.
+    3. **Resolve** — applies Minimum Version Selection (MVS) to produce a deterministic dependency graph.
+    4. **Fetch** — downloads tarballs from the npm registry (or other sources); workspace members become live symlinks.
+    5. **Analyze** — scans every JS/TS file in every fetched package against 18 security patterns.
+    6. **Prompt** — asks for your approval on any findings (unless `--non-interactive`).
+    7. **Extract** — unpacks approved packages into `node_modules` and the content-addressed store.
+    8. **Lock** — writes `ara.lock` with the full resolved graph.
 
     <Note>
       On a project with no suspicious dependencies, Ara completes silently. The prompts only appear when the analyzer finds something worth flagging.
@@ -47,7 +48,7 @@ Ara works with any existing `package.json` project — no migration step, no new
     ```text
     🔍 Scanning some-pkg@2.1.0...
       ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
-      ⚠  credential-access (high) — process.env.AWS_SECRET_KEY in lib/config.js:10
+      ⚠  credential-access (medium) — process.env.AWS_SECRET_KEY in lib/config.js:10
 
     Allow some-pkg@2.1.0?
       [y] Yes, install anyway
@@ -139,13 +140,14 @@ Ara works with any existing `package.json` project — no migration step, no new
     ara run test --profile restricted   # safe syscalls, read-only filesystem, no network
     ```
 
-    The three profiles are:
+    The four profiles are:
 
     | Profile | What it allows |
     |---------|---------------|
     | `open` (or `runtime`) | No restrictions — full access to the system |
-    | `restricted` | Safe syscalls only, read-only filesystem, no network |
+    | `restricted` | Safe syscalls only, no network, no subprocess spawning |
     | `hermetic` | Minimal syscall set, no network, deterministic clock |
+    | `custom` | User-defined restrictions configured via `ara.toml` |
 
     <Warning>
       Sandbox profiles only apply on **Linux x86\_64**. On macOS and Windows, `ara run` executes the script without restrictions regardless of the `--profile` flag you pass.

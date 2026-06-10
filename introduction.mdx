@@ -21,7 +21,7 @@ The JavaScript ecosystem has an extraordinary supply chain attack surface. Milli
     Packages are stored by SHA-256 hash, not by name and version. Identical packages are never duplicated, integrity is verifiable without external tooling, and rollbacks are trivial.
   </Card>
   <Card title="Sandboxed Execution" icon="box" href="/security/sandbox">
-    Build and test scripts run inside a Linux seccomp-BPF filter. Three profiles — hermetic, restricted, and open — let you choose exactly what syscalls a script is allowed to make.
+    Build and test scripts run inside a Linux seccomp-BPF filter. Four profiles — hermetic, restricted, open, and custom — let you choose exactly what syscalls a script is allowed to make.
   </Card>
 </CardGroup>
 
@@ -30,12 +30,13 @@ The JavaScript ecosystem has an extraordinary supply chain attack surface. Milli
 When you run `ara install`, Ara doesn't just download packages and unpack them. It works through a deliberate sequence designed to catch problems at each stage:
 
 1. **Parse** your `package.json` as the primary source of truth, merging advanced settings from `ara.toml` if present.
-2. **Resolve** every dependency using MVS — selecting the minimum version that satisfies all constraints.
-3. **Fetch** tarballs from npm, GitHub, git, tarball URLs, or local paths; workspace members become live symlinks.
-4. **Analyze** every fetched package by scanning its JS/TS source files against security patterns.
-5. **Prompt** for your decision on anything suspicious — or proceed silently with `--non-interactive` in CI.
-6. **Extract** approved packages into `node_modules` and the content-addressed store.
-7. **Write** `ara.lock` with the full resolved graph, including hashes and sources.
+2. **Expand workspace members** — globs `workspaces` patterns and creates implicit deps for each discovered member.
+3. **Resolve** every dependency using MVS — selecting the minimum version that satisfies all constraints.
+4. **Fetch** tarballs from npm, GitHub, git, tarball URLs, or local paths; workspace members become live symlinks.
+5. **Analyze** every fetched package by scanning its JS/TS source files against security patterns.
+6. **Prompt** for your decision on anything suspicious — or proceed silently with `--non-interactive` in CI.
+7. **Extract** approved packages into `node_modules` and the content-addressed store.
+8. **Write** `ara.lock` with the full resolved graph, including hashes and sources.
 
 ## Who Ara is for
 

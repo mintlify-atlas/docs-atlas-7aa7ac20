@@ -117,7 +117,7 @@ Any dependency version prefixed with `workspace:` is resolved against a local wo
 The `[security]` section controls how Ara's built-in security scanner behaves when it detects suspicious patterns in a package's source files.
 
 <ParamField body="risk_threshold" type="string">
-  The minimum severity level that triggers a warning or prompt. Findings **at or below** this level are silently allowed; findings **above** it produce a prompt (or fail in `--non-interactive` mode).
+  The minimum severity level that triggers a warning or prompt. Findings **below** this level are silently allowed; findings **at or above** it produce a prompt (or fail in `--non-interactive` mode).
 
   Accepted values (in ascending severity order): `"low"`, `"medium"`, `"high"`, `"critical"`.
 
