@@ -1,0 +1,160 @@
+---
+title: "Migrate an Existing npm Project to Ara"
+sidebarTitle: "Migrate from npm"
+description: "Ara reads package.json natively — no migration step needed. Drop it into any npm project and start installing with security analysis built in."
+---
+
+Switching to Ara does not require converting your project to a new format or running a migration script. Because Ara uses `package.json` as its primary source of truth, you can point it at any existing npm project and run `ara install` immediately. Ara reads `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `scripts`, and `workspaces` exactly as npm would — and then adds content-addressed storage, MVS-based resolution, and a built-in security scanner on top.
+
+## What changes and what doesn't
+
+When you replace `npm install` with `ara install`, the following things stay the same:
+
+- Your `package.json` is read and written as-is. No new required fields.
+- Your `node_modules/` directory is populated at the same paths.
+- Scripts defined under `scripts` are still run with `ara run <script>`.
+- All existing `workspace:` protocol references work without modification.
+
+The things that are new:
+
+- Ara writes `ara.lock` instead of (or alongside) `package-lock.json`.
+- Every package is scanned for security patterns before it lands in `node_modules/`.
+- The resolved graph is stored content-addressed at `~/.ara/store/`.
+
+## Command mapping
+
+Use the table below as a drop-in reference when updating existing scripts, READMEs, or CI configs.
+
+| npm / npx | Ara equivalent | Notes |
+|---|---|---|
+| `npm install` | `ara install` | Reads `package.json`, writes `ara.lock` |
+| `npm install <pkg>` | `ara add <pkg>` | Also aliased as `ara install <pkg>` |
+| `npm install --save-dev <pkg>` | `ara add --save-dev <pkg>` | Saves under `devDependencies` |
+| `npm install --save-peer <pkg>` | `ara add --save-peer <pkg>` | Saves under `peerDependencies` |
+| `npm install --save-optional <pkg>` | `ara add --save-optional <pkg>` | Saves under `optionalDependencies` |
+| `npm run <script>` | `ara run <script>` | Optionally add `--profile` for sandboxing |
+| `npx <pkg>` | `ara x <pkg>` | Downloads to a temp dir, cleans up after |
+| `npm ci` | `ara install` | Committed `ara.lock` ensures identical resolution |
+
+<Note>
+`ara install <package>` is an alias for `ara add <package>`. Use whichever feels natural — both accept the same flags and resolve the same way.
+</Note>
+
+## Your first install
+
+<Steps>
+
+### Drop Ara into your project
+
+No changes to `package.json` are required. Navigate to your project root and run:
+
+```bash
+ara install
+```
+
+Ara parses your existing `package.json`, resolves every dependency using Minimum Version Selection, fetches tarballs, scans each one for suspicious patterns, and writes `ara.lock`.
+
+### Commit the lockfile
+
+`ara.lock` is the equivalent of `package-lock.json`. Commit it to version control so every machine and CI run produces the exact same resolved graph.
+
+```bash
+git add ara.lock
+git commit -m "chore: add ara.lock"
+```
+
+### (Optional) Keep package-lock.json for deploy platforms
+
+Some hosting platforms and deployment pipelines detect `package-lock.json` specifically. Until they add native `ara.lock` support, pass `--package-lock` to generate a `package-lock.json` (lockfileVersion 3) alongside `ara.lock`:
+
+```bash
+ara install --package-lock
+```
+
+<Warning>
+The `--package-lock` flag is a temporary compatibility measure. It will be removed once platforms add native `ara.lock` detection. Do not rely on it as your primary lockfile strategy.
+</Warning>
+
+### Replace npm in package.json scripts
+
+Update any scripts that invoke `npm` directly:
+
+```json
+{
+  "scripts": {
+    "build": "ara run build",
+    "test":  "ara run test --profile restricted"
+  }
+}
+```
+
+For projects that use `npx` in scripts, replace it with `ara x`:
+
+```json
+{
+  "scripts": {
+    "codegen": "ara x graphql-codegen --config codegen.yml"
+  }
+}
+```
+
+</Steps>
+
+## Adding new packages
+
+`ara add` works the same way as `npm install <pkg>` and immediately writes the result back to `package.json` and `ara.lock`:
+
+```bash
+ara add zod                     # latest from npm registry
+ara add react@18.2.0            # exact version
+ara add zod@^3                  # range (resolved to latest matching)
+ara add --save-dev eslint       # dev dependency
+ara add --range=caret zod       # save with ^ prefix in package.json
+ara add react zod typescript    # multiple packages at once
+```
+
+<Tip>
+Pass `--range=caret` to save the installed version with a `^` prefix in `package.json`, matching common npm convention. The default saves the exact resolved version.
+</Tip>
+
+## Security prompts during install
+
+By default, Ara stops and prompts you when a package has findings above the medium risk threshold. For example:
+
+```
+🔍 Scanning some-package@2.1.0...
+  ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+  ⚠  credential-access (high) — process.env access in lib/config.js:10
+
+Allow some-package@2.1.0?
+  [y] Yes, install anyway
+  [n] No, skip this package
+  [s] Sandbox (restrict at runtime)
+> _
+```
+
+This is intentional. Ara surfaces supply-chain risks at install time, not after deployment.
+
+## Current limitations
+
+Ara is honest about what it cannot yet do. Keep these in mind before fully replacing npm in a workflow:
+
+<Accordion title="No private registry support">
+Ara fetches from public npm registries only. It does not read `.npmrc` authentication tokens, handle scoped private packages, or authenticate against custom registry URLs. If your project depends on a private registry, Ara will not work for that dependency today.
+</Accordion>
+
+<Accordion title="No lifecycle scripts">
+Ara intentionally does not run `preinstall`, `postinstall`, `prepare`, or any other npm lifecycle scripts on packages. This prevents install-time code execution — a common vector for supply-chain attacks. Packages that rely on install-time native compilation (e.g., some binaries using `node-gyp`) will not build their native modules automatically.
+</Accordion>
+
+<Accordion title="No publish support">
+`ara publish` exists as a stub but does nothing yet. If your workflow involves publishing to npm or GitHub Packages, continue using `npm publish` for that step.
+</Accordion>
+
+<Accordion title="Sequential downloads">
+Packages are currently fetched one at a time. There is no concurrent download queue. Large projects with many transitive dependencies will install noticeably slower than npm or pnpm.
+</Accordion>
+
+<Accordion title="Limited version range syntax">
+Ara handles `^`, `~`, `>=`, `<=`, exact versions, and wildcards. Complex expressions like `>=1.0.0 <2.0.0` or `||` combinators are not fully supported and may resolve unexpectedly.
+</Accordion>

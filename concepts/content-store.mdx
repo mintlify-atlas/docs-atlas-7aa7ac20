@@ -1,0 +1,160 @@
+---
+title: "Content-Addressed Package Store"
+sidebarTitle: "Content Store"
+description: "Ara stores packages by SHA-256 hash rather than name and version — enabling automatic deduplication, tamper detection, and zero-cost rollbacks."
+---
+
+Ara does not store packages in a flat `node_modules` hierarchy keyed by name and version. Instead, every package tarball is stored in a central *content-addressed store* — a directory where the storage key is the SHA-256 hash of the file's bytes, not its name. Two packages with identical content (even from different ecosystems or versions) are stored exactly once. A package can never be silently corrupted without the hash changing. And restoring a previous version of a dependency is as simple as looking up its old hash — the object is still there in the store.
+
+## What content-addressed storage means
+
+In a traditional package manager, `node_modules/zod@3.23.8/` is just a path. Nothing stops that directory from being modified after install, and no tool can tell you whether the files you have match what was originally downloaded. Ara separates the concern entirely:
+
+- **Identity**: packages are identified by their SHA-256 hash, not their name or version.
+- **Immutability**: once written, an object is never overwritten (the `put` operation is a no-op if the hash already exists).
+- **Verification**: comparing a hash is O(1); recomputing the hash of the stored bytes proves integrity without any external database.
+- **Deduplication**: install `zod@3.23.8` in fifty projects — the bytes exist only once in the store.
+
+---
+
+## Store directory layout
+
+The store lives at `~/.ara/store` by default (the exact path is configurable). Its top-level subdirectories each serve a distinct purpose:
+
+```
+~/.ara/store/
+├── objects/          # Package tarballs, sharded by hash
+│   ├── 9e/
+│   │   └── 1d/
+│   │       └── sha256-9e1d...
+│   └── cc/
+│       └── 8a/
+│           └── sha256-cc8a...
+├── graphs/           # Serialised dependency graphs, keyed by graph hash
+├── snapshots/        # Point-in-time snapshots (reserved for future use)
+├── cache/            # Ephemeral HTTP response cache
+├── temp/             # In-progress atomic writes (auto-cleaned)
+└── extracted/        # Pre-extracted package trees, keyed by hash
+```
+
+### `objects/` — The tarball store
+
+All downloaded package tarballs land here. Objects are **sharded** to prevent any single directory from holding thousands of files: the first two hex characters of the hash become the first level of nesting, the next two characters become the second level, and the full `sha256-<hex>` string is the filename.
+
+For a package with hash `sha256-9e1df4a3...`:
+
+```
+objects/
+└── 9e/
+    └── 1d/
+        └── sha256-9e1df4a3...   ← the tarball
+```
+
+This two-level sharding keeps directory listings manageable even with thousands of cached packages.
+
+### `graphs/` — Dependency graph store
+
+When Ara writes `ara.lock`, it also serialises the resolved dependency graph and stores it here under a `graph-<hex>` key. The `graph_hash` field in `ara.lock` points into this directory, letting Ara quickly compare two graphs or restore a previous resolution.
+
+### `extracted/` — Pre-extracted packages
+
+When a package is approved and installed, Ara also unpacks the tarball into `extracted/<hash>/`. On subsequent installs, Ara checks this directory first — if the extracted tree already exists, the install skips the unpack step entirely.
+
+```
+extracted/
+└── sha256-9e1df4a3.../
+    ├── package.json
+    ├── dist/
+    │   └── index.js
+    └── src/
+        └── index.ts
+```
+
+### `temp/` — Atomic write staging
+
+All writes go through `temp/` first. Ara writes the tarball to a UUID-named temp file, then performs an atomic `rename` into the final sharded path. This means a crashed or interrupted install never leaves a partial object in `objects/`.
+
+---
+
+## How Ara uses the store during install
+
+<Steps>
+  <Step title="Hash check">
+    Before downloading anything, Ara checks whether `objects/` already contains an object with the expected hash. If it does, the download is skipped entirely.
+  </Step>
+  <Step title="Download to temp">
+    If the object is absent, Ara fetches the tarball from the appropriate backend and writes it to a UUID-named file in `temp/`.
+  </Step>
+  <Step title="Atomic move">
+    The temp file is renamed into its final sharded path under `objects/`. Because `rename` is atomic on POSIX filesystems, the object is either fully present or fully absent — never partially written.
+  </Step>
+  <Step title="Security scan">
+    Ara scans the package's source files for suspicious patterns before it is ever extracted to `node_modules`.
+  </Step>
+  <Step title="Extract to node_modules">
+    The approved tarball is unpacked from the store into `node_modules/<name>` and also cached in `extracted/<hash>/` for future installs.
+  </Step>
+</Steps>
+
+---
+
+## Deduplication in practice
+
+Because identity is based on content, not name, packages that share identical bytes are stored once regardless of how many projects reference them.
+
+```
+Project A:  zod@3.23.8  →  sha256-9e1d...
+Project B:  zod@3.23.8  →  sha256-9e1d...  (same hash → same object)
+```
+
+Even within a single monorepo, if two workspace members depend on the same version of a library, Ara stores one copy and links both `extracted/` paths to it.
+
+---
+
+## Integrity verification
+
+Every `package_hash` field in `ara.lock` is the SHA-256 of the object stored in `objects/`. Ara uses this hash to verify the store before extracting:
+
+1. Read the object from the store.
+2. Recompute its SHA-256.
+3. Compare against the hash in `ara.lock`.
+4. If they differ, raise an `IntegrityViolation` error and refuse to proceed.
+
+This check happens locally, without any external tool or database query.
+
+---
+
+## Garbage collection with `ara gc`
+
+Over time the store accumulates objects for packages that are no longer referenced by any project's `ara.lock`. The `ara gc` command removes these orphaned objects:
+
+```bash
+# Preview what would be removed without deleting anything
+ara gc --dry-run
+
+# Remove orphaned objects (normal mode)
+ara gc
+
+# Remove everything not referenced by any known lockfile
+ara gc --aggressive
+```
+
+<Warning>
+`ara gc --aggressive` scans for `ara.lock` files on disk to build the reachability set. If you run it from a directory that does not contain or is not an ancestor of all your projects, it may delete objects that are still needed by projects elsewhere on your system.
+</Warning>
+
+<Tip>
+Run `ara gc --dry-run` first to review what will be removed before committing to a destructive operation. The dry-run output lists each object path and its approximate size.
+</Tip>
+
+---
+
+## Key-safety rules
+
+Ara enforces strict key validation before any store read or write. A hash key is rejected if it:
+
+- Contains a null byte (`\0`)
+- Contains a path separator (`/` or `\`)
+- Contains a `..` traversal component
+
+These checks prevent path-traversal attacks where a malicious `package_hash` value in a lockfile could be used to read or write arbitrary files on disk.

@@ -1,0 +1,151 @@
+---
+title: "Sandboxed Script Execution with seccomp-BPF"
+sidebarTitle: "Sandbox"
+description: "Ara wraps scripts in Linux seccomp-BPF filters. Four profiles — hermetic, restricted, open, and custom — control which syscalls the process can make."
+---
+
+When you run a script through Ara, you can choose how much trust to grant it. Ara's sandbox wraps the script process in a Linux seccomp-BPF filter that restricts the set of syscalls the process is allowed to make. Any syscall not on the allowlist causes the process to be killed immediately — no warnings, no error handling, just termination.
+
+This is fundamentally different from runtime analysis tools that observe behavior. The syscall filter is applied before the script starts executing, so a script cannot call `connect()` or `execve()` even if it tries to. The restriction is enforced by the kernel.
+
+## Platform support
+
+<Warning>
+  The seccomp-BPF sandbox only works on **Linux x86_64**. On macOS and Windows, `ara run` falls back to running the script without any restrictions — the profile flag is accepted but has no effect. Cross-platform sandbox support requires per-platform primitives that are not yet implemented.
+</Warning>
+
+The syscall tables are written specifically for the x86_64 Linux ABI. ARM64, RISC-V, and other architectures have different syscall numbers and are not currently supported even on Linux.
+
+## Sandbox profiles
+
+Ara provides four built-in profiles. You select one with the `--profile` flag.
+
+### Open (alias: `runtime`)
+
+The script runs with network access enabled and process spawning allowed. No seccomp filter is applied — this profile exists to make the default explicit.
+
+Use `open` for development servers, scaffolding tools, and any script that needs to reach the network or start child processes.
+
+```bash
+ara run dev
+ara run dev --profile open
+ara run dev --profile runtime  # same as open
+```
+
+### Restricted
+
+Network access is disabled. Process spawning is disabled. The filesystem is accessible, but the syscall allowlist only permits safe operations: reading, writing, directory traversal, file stat, pipes, and I/O multiplexing. Syscalls like `connect`, `bind`, `socket`, and `execve` are blocked.
+
+Use `restricted` for test suites that should be self-contained and should never touch the network or spawn subprocesses.
+
+```bash
+ara run test --profile restricted
+```
+
+### Hermetic
+
+The most locked-down profile. No network, no process spawning, and the system clock is replaced with a deterministic value. The syscall allowlist is deliberately minimal: memory management, file I/O, signals, clocks, and `getrandom`. Filesystem access is limited to what the process opened before the filter was applied.
+
+Use `hermetic` for build scripts where determinism matters. The same inputs should always produce the same outputs, and any attempt to reach the network or read external state fails at the kernel level.
+
+```bash
+ara run build --profile hermetic
+```
+
+### Custom
+
+All access defaults are disabled (no network, no spawn, no deterministic clock), but no BPF filter is applied. This profile is a starting point if you want to construct fine-grained access rules manually in `ara.toml`. In practice it behaves the same as `open` on Linux until custom syscall rules are configured — use it as a named placeholder for future configuration.
+
+```bash
+ara run build --profile custom
+```
+
+## Profile comparison
+
+| Profile | Alias | Network | Process spawn | Deterministic clock | seccomp filter |
+|---------|-------|---------|---------------|---------------------|----------------|
+| `open` | `runtime` | ✅ | ✅ | ❌ | None |
+| `restricted` | — | ❌ | ❌ | ❌ | Broad allowlist |
+| `hermetic` | — | ❌ | ❌ | ✅ | Minimal allowlist |
+| `custom` | — | ❌ | ❌ | ❌ | None |
+
+## Choosing a profile
+
+Match the profile to the trust level and requirements of the script:
+
+<Tabs>
+  <Tab title="Build scripts">
+    Build scripts should be hermetic. A build that succeeds or fails based on an external HTTP call is not reproducible. Use `hermetic` to enforce that the build depends only on the source files present on disk.
+
+    ```bash
+    ara run build --profile hermetic
+    ```
+
+    Or set it as the default in `ara.toml` so you never have to remember to pass the flag:
+
+    ```toml
+    # ara.toml
+    [build]
+    hermetic = true
+    ```
+  </Tab>
+  <Tab title="Test scripts">
+    Tests that are unit tests or integration tests against a local service generally do not need network access. Use `restricted` to prevent tests from making outbound connections, which can mask test environment dependencies.
+
+    ```bash
+    ara run test --profile restricted
+    ```
+  </Tab>
+  <Tab title="Dev servers">
+    Development servers need to bind ports and sometimes spawn child processes (e.g. compilers, watchers). Use `open` — this is the default if you omit `--profile`.
+
+    ```bash
+    ara run dev
+    # equivalent to:
+    ara run dev --profile open
+    ```
+  </Tab>
+  <Tab title="Scaffolding tools">
+    When using `ara x` to run scaffolding tools like `create-next-app`, Ara uses the `open` profile automatically because these tools need filesystem and network access to download templates and install dependencies.
+
+    ```bash
+    ara x create-next-app my-app
+    ```
+  </Tab>
+</Tabs>
+
+## Defaulting to hermetic builds
+
+If your project's build should always run hermetically, add the following to `ara.toml`. This makes `ara run build` use the hermetic profile without needing the flag:
+
+```toml
+# ara.toml
+[build]
+hermetic = true
+```
+
+You can still override it on the command line:
+
+```bash
+# Uses hermetic from ara.toml
+ara run build
+
+# Explicit override to open if you need network during build
+ara run build --profile open
+```
+
+## How the BPF filter works
+
+When `ara run` launches a script, the executor spawns `sh -c <command>` and, on Linux, installs the seccomp filter via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, ...)` before the shell starts executing your script.
+
+The filter is a BPF program that:
+1. Loads the syscall number from the `seccomp_data` structure.
+2. Compares it against each entry in the profile's allowlist.
+3. Returns `SECCOMP_RET_ALLOW` if the syscall is on the list.
+4. Returns `SECCOMP_RET_KILL` (kill the process) for everything else.
+
+The hermetic allowlist includes roughly 22 syscalls (memory, I/O, signals, clocks). The restricted allowlist includes a broader set of about 70 syscalls that cover typical filesystem and I/O operations. Neither includes `socket`, `connect`, `bind`, `execve`, or `clone`, which means network access and subprocess spawning are impossible.
+
+<Note>
+  The sandbox runs the **script process** under the filter, not Ara itself. Ara's own resolver, fetcher, and store operations are unaffected by the profile you choose for `ara run`.
+</Note>

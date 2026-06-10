@@ -1,0 +1,156 @@
+---
+title: "ara analyze and audit — Scan Packages for Security Patterns"
+sidebarTitle: "analyze"
+description: "Scan a local package directory for 16+ security patterns including eval, child_process, prototype pollution, and credential access. ara audit adds a written summary report."
+---
+
+`ara analyze` and `ara audit` both scan a package directory for suspicious code patterns and print the findings to stdout. They use the same underlying analysis engine that runs automatically during `ara install` and `ara add`, but they let you inspect any local directory on demand — whether it is a package you downloaded manually, a workspace member, or a directory you want to audit before publishing.
+
+The two commands are nearly identical: `ara analyze` prints raw findings, while `ara audit` prints the same findings and appends a one-line written summary at the end. Both default to the current working directory if no path is given.
+
+## Usage
+
+```bash
+ara analyze [path]
+ara audit [path]
+```
+
+`path` must be an absolute or relative path to a directory containing JavaScript, TypeScript, or related source files. If omitted, the current directory (`.`) is used.
+
+## Examples
+
+<CodeGroup>
+
+```bash Analyze current directory
+# Scan the package in the current directory
+ara analyze
+
+# Full audit with summary line
+ara audit
+```
+
+```bash Analyze a specific path
+# Inspect a freshly downloaded package
+ara analyze ./node_modules/some-package
+
+# Audit a workspace member
+ara audit ./packages/my-lib
+
+# Audit an absolute path
+ara audit /tmp/downloaded-pkg
+```
+
+```bash Combining with install
+# Scan a package before installing it manually
+ara analyze ./downloads/suspicious-pkg-1.0.0
+
+# If it looks safe, install it
+ara add ./downloads/suspicious-pkg-1.0.0
+```
+
+</CodeGroup>
+
+## What gets scanned
+
+The analyzer walks every JavaScript, TypeScript, JSX, TSX, MJS, CJS, MTS, and CTS file in the target directory. It skips:
+
+- Files larger than 500 KB
+- Binary files
+- Known non-source directories: `node_modules/`, `.git/`, `dist/`, etc.
+
+Each file is checked against a set of compiled regex patterns. The table below lists every pattern, its severity, and what it detects:
+
+| Pattern | Severity | What it catches |
+|---|---|---|
+| `eval-usage` | Critical | Arbitrary code execution via `eval()` |
+| `new-function` | Critical | Dynamic code creation via `new Function()` |
+| `child-process-exec` | High | Shell command execution, potential injection |
+| `child-process-require` | High | Import of the `child_process` module |
+| `vm-escape` | High | VM sandbox escape methods |
+| `process-binding` | High | Access to native addons via `process.binding()` |
+| `prototype-pollution` | High | `__proto__` assignment |
+| `constructor-pollution` | High | `constructor.prototype` manipulation |
+| `credential-access` | High | Access to `process.env`, `AWS_*` keys, tokens |
+| `obfuscated-code` | Medium | Base64, hex-encoded, or compressed strings |
+| `dynamic-require` | Medium | `require()` with non-literal arguments |
+| `dynamic-import` | Medium | `import()` with potentially dynamic paths |
+| `deprecated-cipher` | Medium | Use of broken crypto (MD5, SHA1, RC4, DES) |
+| `weak-crypto` | Medium | `Math.random()` used in security contexts |
+| `fs-dangerous-delete` | Medium | Recursive filesystem deletion |
+| `fs-dangerous-write` | Medium | Dangerous filesystem write operations |
+| `install-scripts` | Medium | Presence of `pre`/`post`-install scripts |
+
+Findings are deduplicated per file and per pattern — the same `eval()` call on the same line only appears once in the report.
+
+## Output format
+
+### `ara analyze`
+
+Prints each finding with its pattern name, severity, and file location. No trailing summary line.
+
+```
+Analyzing /home/user/my-app/node_modules/example-pkg...
+
+  ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+  ⚠  credential-access (high) — process.env access in lib/config.js:10
+  ⚠  dynamic-require (medium) — dynamic require() in lib/loader.js:7
+```
+
+### `ara audit`
+
+Identical output to `ara analyze`, plus an appended summary line:
+
+```
+Auditing /home/user/my-app/node_modules/example-pkg...
+
+  ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+  ⚠  credential-access (high) — process.env access in lib/config.js:10
+  ⚠  dynamic-require (medium) — dynamic require() in lib/loader.js:7
+
+  Summary: Found potential issue(s).
+```
+
+When no issues are found:
+
+```
+Analyzing /home/user/my-app/node_modules/safe-pkg...
+
+  No suspicious patterns detected.
+```
+
+With `ara audit`:
+
+```
+Auditing /home/user/my-app/node_modules/safe-pkg...
+
+  No suspicious patterns detected.
+
+  Summary: No issues found.
+```
+
+## Difference between analyze and audit
+
+| | `ara analyze` | `ara audit` |
+|---|---|---|
+| Scans files | ✅ | ✅ |
+| Prints per-finding details | ✅ | ✅ |
+| Appends written summary | ❌ | ✅ |
+
+Use `ara analyze` for quick interactive checks during development. Use `ara audit` when you want a slightly more structured report — for example, when capturing output in a CI log or sharing results with a team.
+
+<Note>
+  Both `ara analyze` and `ara audit` are read-only operations. They never modify files, install packages, or produce side effects. They are safe to run on any directory.
+</Note>
+
+## Integration with install
+
+The same analysis engine runs automatically during `ara install` and `ara add`. You do not need to run `ara analyze` separately for packages you install through Ara's normal flow — scanning happens before extraction. Use `ara analyze` and `ara audit` when you want to inspect a directory that was not installed through Ara, or when you want to re-examine an already-installed package.
+
+<Tip>
+  To set a project-wide minimum severity threshold for interactive installs, add a `[security]` block to your `ara.toml`. Findings below the threshold are auto-approved without prompting.
+
+  ```toml
+  [security]
+  risk_threshold = "high"  # only prompt for High and Critical findings
+  ```
+</Tip>

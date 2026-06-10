@@ -1,0 +1,68 @@
+---
+title: "Ara: A Security-First JS/TS Package Manager Built in Rust"
+sidebarTitle: "Introduction"
+description: "A package manager and build orchestrator for JavaScript/TypeScript with security analysis baked into every install, not bolted on as an afterthought."
+---
+
+Ara is a package manager and build orchestrator built for the JavaScript and TypeScript ecosystem, written in Rust. Where most package managers treat security as a plugin or a CI step you configure later, Ara embeds a security analysis engine directly into the install flow — every dependency is scanned before it unpacks into your project. It draws on lessons from Go Modules, pnpm, Nix, and Cargo, then wraps them in a familiar CLI you can use with any existing `package.json` project today, with no migration required.
+
+## Why Ara?
+
+The JavaScript ecosystem has an extraordinary supply chain attack surface. Millions of packages, deeply nested dependency trees, and install-time scripts that run arbitrary code the moment you type `npm install`. Ara is built on the premise that a package manager should be the first line of defense, not a passive courier.
+
+<CardGroup cols={2}>
+  <Card title="Security Analysis" icon="shield-halved" href="/security/overview">
+    Every package is scanned against 17+ regex patterns — catching `eval()`, `child_process`, prototype pollution, credential access, and more — before it ever lands in `node_modules`.
+  </Card>
+  <Card title="MVS Resolution" icon="diagram-project" href="/concepts/resolution">
+    Ara uses Minimum Version Selection, inspired by Go Modules. The same manifest and lockfile produce the exact same dependency graph on any machine, every time.
+  </Card>
+  <Card title="Content-Addressed Store" icon="database" href="/concepts/content-store">
+    Packages are stored by SHA-256 hash, not by name and version. Identical packages are never duplicated, integrity is verifiable without external tooling, and rollbacks are trivial.
+  </Card>
+  <Card title="Sandboxed Execution" icon="box" href="/security/sandbox">
+    Build and test scripts run inside a Linux seccomp-BPF filter. Three profiles — hermetic, restricted, and open — let you choose exactly what syscalls a script is allowed to make.
+  </Card>
+</CardGroup>
+
+## How the install flow works
+
+When you run `ara install`, Ara doesn't just download packages and unpack them. It works through a deliberate sequence designed to catch problems at each stage:
+
+1. **Parse** your `package.json` as the primary source of truth, merging advanced settings from `ara.toml` if present.
+2. **Resolve** every dependency using MVS — selecting the minimum version that satisfies all constraints.
+3. **Fetch** tarballs from npm, GitHub, git, tarball URLs, or local paths; workspace members become live symlinks.
+4. **Analyze** every fetched package by scanning its JS/TS source files against security patterns.
+5. **Prompt** for your decision on anything suspicious — or proceed silently with `--non-interactive` in CI.
+6. **Extract** approved packages into `node_modules` and the content-addressed store.
+7. **Write** `ara.lock` with the full resolved graph, including hashes and sources.
+
+## Who Ara is for
+
+Ara is aimed at JavaScript and TypeScript developers who have been burned by supply chain incidents, work in environments with security requirements, or simply want more control and transparency over what runs during an install. It works with your existing `package.json` — you do not need to rewrite anything to try it.
+
+## Project status
+
+Ara is at **v0.11.0** and in active development. Core install (manifest-based and direct spec), `ara add`, `ara run`, `ara analyze`, and `ara x` all work. Build, publish, SBOM generation, and LAN distribution are on the roadmap. Some ecosystem gaps exist — see the [limitations](#limitations) section in the README for details.
+
+<Note>
+  The seccomp-BPF sandbox is Linux x86_64 only. On macOS and Windows, `ara run` works but degrades gracefully to running scripts without syscall restrictions. All other features work on all three platforms.
+</Note>
+
+## Limitations worth knowing upfront
+
+- **No private registry support** — `.npmrc` credentials and scoped private packages are not handled yet.
+- **No lifecycle scripts** — `preinstall`, `postinstall`, and `prepare` hooks are intentionally skipped for security.
+- **Sequential downloads** — packages are fetched one at a time; large projects install slower than npm or pnpm today.
+- **No publish** — `ara publish` exists as a stub only.
+
+## Ready to install?
+
+<CardGroup cols={2}>
+  <Card title="Install Ara" icon="download" href="/installation">
+    Get the binary on Linux, macOS, or Windows — or build from source with Cargo.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Point Ara at an existing npm project and run your first secure install in under five minutes.
+  </Card>
+</CardGroup>

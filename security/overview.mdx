@@ -1,0 +1,107 @@
+---
+title: "How Ara Analyzes Dependencies for Security"
+sidebarTitle: "Overview"
+description: "Ara scans every dependency for suspicious code patterns before installing it — security analysis is baked into the install flow, not an optional step."
+---
+
+Security in Ara is not a separate command you run after the fact. Every time you install a package — whether from the npm registry, a GitHub repository, or a local tarball — Ara scans its source files for dangerous patterns before unpacking anything to your project. If something suspicious turns up, Ara tells you immediately and lets you decide what to do. That decision happens in your terminal, not in a CI pipeline you configured months ago.
+
+## The install flow
+
+When you run `ara install` or `ara add <package>`, the following steps happen in order:
+
+1. **Fetch** — Ara downloads the package tarball from the appropriate source.
+2. **Analyze** — The security scanner walks every JS/TS source file in the package and runs it through a set of compiled regex patterns.
+3. **Prompt** — If any findings are detected, Ara shows them and asks whether to install, skip, or sandbox the package.
+4. **Extract** — Approved packages are unpacked to `node_modules/` and stored in the content-addressable store.
+
+The analysis step cannot be bypassed silently in interactive mode. You must explicitly accept or deny each package with findings.
+
+## Risk levels
+
+Every finding is assigned one of four severity levels, ordered from most to least severe:
+
+| Level | Color | Meaning |
+|-------|-------|---------|
+| `critical` | 🔴 | Immediate code execution risk — `eval()`, `new Function()` |
+| `high` | 🟠 | Significant attack surface — shell execution, prototype pollution, native access |
+| `medium` | 🟡 | Suspicious but context-dependent — credential access, dynamic imports, weak crypto |
+| `low` | 🟢 | Informational — non-secure RNG, deprecated cipher APIs |
+
+The overall risk level for a package is the highest severity across all its findings. So a package with one `critical` finding and three `low` findings is classified as `critical`.
+
+## Interactive mode vs CI
+
+By default, Ara runs in interactive mode. When a package has findings, it pauses and shows a prompt:
+
+```bash
+$ ara add malicious-pkg
+
+🔍 Scanning malicious-pkg@1.0.0...
+  ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+  ⚠  credential-access (high) — process.env access in lib/config.js:10
+
+Allow malicious-pkg@1.0.0?
+  [y] Yes, install anyway
+  [n] No, skip this package
+  [s] Sandbox (restrict at runtime)
+> n
+✗ malicious-pkg@1.0.0 — denied
+```
+
+For CI and automated environments, pass `--non-interactive` to install all packages silently. Findings are still logged but no prompt is shown:
+
+```bash
+ara install --non-interactive
+```
+
+<Note>
+  In non-interactive mode, Ara installs all packages regardless of their risk level unless you configure a `risk_threshold` in `ara.toml`. See the configuration section below.
+</Note>
+
+## Standalone analysis commands
+
+You can scan a package directory without installing anything using either of these commands:
+
+```bash
+# Scan the current directory and print findings
+ara analyze
+
+# Scan a specific directory
+ara analyze ./some-package
+
+# Full audit with extended report format
+ara audit ./some-package
+```
+
+`ara audit` produces the same findings as `ara analyze` but uses a more detailed output format suitable for reports.
+
+## Configuring security thresholds
+
+Ara reads security policy from the optional `[security]` section of `ara.toml`. You do not need this file for basic usage, but it lets you enforce stricter rules in projects where security is critical.
+
+```toml
+# ara.toml
+
+[security]
+risk_threshold = "high"   # Treat High and above as blocking (low, medium, high, critical)
+require_review = true     # Always prompt, even for packages with no findings
+```
+
+**`risk_threshold`** sets the minimum severity that triggers a prompt or blocks installation. The default effectively allows everything through in `--non-interactive` mode. Setting `risk_threshold = "medium"` means any package with a `medium`, `high`, or `critical` finding will be flagged.
+
+**`require_review`** forces the interactive prompt for every package, even clean ones. Useful for auditing environments where human sign-off is required.
+
+<Tip>
+  For production CI pipelines, combine `--non-interactive` with `risk_threshold = "high"` to fail fast on serious findings without blocking on low-severity warnings.
+</Tip>
+
+## No lifecycle scripts
+
+Unlike npm, Ara does **not** run package lifecycle scripts (`preinstall`, `install`, `postinstall`, `prepare`) at install time. This is an intentional security decision: lifecycle scripts are one of the most common vectors for supply-chain attacks because they execute arbitrary code on your machine the moment you install a package.
+
+Instead, Ara flags any package that defines install scripts as a `High` severity finding so you can evaluate them manually before deciding to run them.
+
+<Warning>
+  Packages that rely on install-time code generation or native compilation (such as some packages that build native Node.js addons) will not work out of the box with Ara. This is a known limitation. You can still run those scripts manually after reviewing them.
+</Warning>

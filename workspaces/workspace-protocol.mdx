@@ -1,0 +1,186 @@
+---
+title: "The workspace: Protocol for Local Dependencies"
+sidebarTitle: "workspace: Protocol"
+description: "Reference for the workspace: protocol: the three version forms, how they become live symlinks, and how Ara records them in the lockfile."
+---
+
+The `workspace:` protocol is how you express a dependency on a sibling package inside the same monorepo. Instead of resolving a name against the npm registry, Ara looks up the matching workspace member, validates that it exists, and installs it as a live symlink. No tarball, no network request, no version mismatch — the symlink always points at the member's actual source directory, so every change is visible immediately to all consumers. Ara's `workspace:` protocol is directly inspired by pnpm's implementation of the same feature.
+
+## The three forms
+
+You can write `workspace:` versions three different ways, each with a distinct semantic:
+
+| Form | Meaning |
+|------|---------|
+| `workspace:*` | Always resolves to the local workspace member, regardless of the member's version field |
+| `workspace:^` | Resolves to the member during development; replaced with `^<member-version>` when the package is published |
+| `workspace:1.2.3` | Pins to an exact version — Ara validates that the member's `version` field matches `1.2.3` |
+
+<Tip>
+Use `workspace:*` when you want to depend on a sibling unconditionally and don't care about version pinning. Use `workspace:^` when you plan to publish the consuming package and want the published manifest to carry a proper semver range automatically.
+</Tip>
+
+## How Ara parses workspace: versions
+
+When Ara reads a `package.json` dependency entry whose version string starts with `workspace:`, it strips that prefix and records `source = "workspace"` on the resolved entry internally. The suffix (`*`, `^`, or a version string) is preserved as the version constraint:
+
+```
+"lib-a": "workspace:^"   →  source = "workspace",  version = "^"
+"lib-b": "workspace:*"   →  source = "workspace",  version = "*"
+"lib-c": "workspace:1.2.3" →  source = "workspace",  version = "1.2.3"
+```
+
+Any dependency that does **not** carry the `workspace:` prefix is treated as an npm registry dependency, regardless of its name.
+
+## Example: root package.json mixing workspace: and npm deps
+
+The `10-protocol-package-json` fixture shows the canonical pattern — a private root package that pulls in one workspace member alongside a regular npm package:
+
+```json
+// package.json — monorepo root
+{
+  "name": "ws-protocol-test",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["packages/lib-a"],
+  "dependencies": {
+    "lib-a": "workspace:^",
+    "zod": "^3.0.0"
+  }
+}
+```
+
+```json
+// packages/lib-a/package.json
+{
+  "name": "lib-a",
+  "version": "0.2.0",
+  "private": true
+}
+```
+
+When `ara install` runs:
+
+- `lib-a` is resolved to `packages/lib-a` — no registry lookup occurs.
+- `node_modules/lib-a` becomes a symlink pointing to `../../packages/lib-a`.
+- `zod` is fetched from the npm registry as normal.
+
+## Example: member depending on a sibling
+
+Any workspace member can reference other members using the same protocol. Here, `pkg-c` (a `package.json`-based member) depends on `pkg-b` (an `ara.toml`-based member):
+
+<Tabs>
+  <Tab title="pkg-c/package.json">
+    ```json
+    {
+      "name": "pkg-c",
+      "version": "0.2.0",
+      "dependencies": {
+        "pkg-b": "workspace:*"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="pkg-b/ara.toml">
+    ```toml
+    [project]
+    name = "pkg-b"
+    version = "0.1.0"
+
+    [deps]
+    pkg-a = { source = "workspace" }
+    ```
+  </Tab>
+  <Tab title="pkg-a/ara.toml">
+    ```toml
+    [project]
+    name = "pkg-a"
+    version = "0.1.0"
+    ```
+  </Tab>
+</Tabs>
+
+Mixed manifest types work transparently — `pkg-c`'s `package.json` and `pkg-b`'s `ara.toml` can reference each other without any special configuration.
+
+<Note>
+In `ara.toml`, a workspace cross-reference is written as `{ source = "workspace" }` with no version suffix. This is equivalent to `workspace:*` in `package.json` — it always resolves to the local member.
+</Note>
+
+## Live symlinks — no reinstall needed
+
+When Ara installs a workspace dependency it creates a symlink, not a copy:
+
+```
+node_modules/
+├── lib-a -> ../../packages/lib-a   # live symlink
+└── zod/                            # extracted tarball
+```
+
+Because the symlink points directly at the source directory, any edit you make inside `packages/lib-a` is immediately visible to anything that `require`s or `import`s `lib-a`. You do not need to re-run `ara install` after editing member source files.
+
+<Warning>
+Ara's security scanner follows symlinks during analysis. Code inside symlinked workspace members is scanned the same way as any third-party package. If a member contains patterns like `eval()` or `child_process` usage, Ara will surface those findings and prompt you — even though the code is local.
+</Warning>
+
+## Lockfile treatment
+
+The `ara.lock` file distinguishes workspace dependencies from registry dependencies using the `source` field. This prevents Ara from making unnecessary network requests when workspace members have not changed:
+
+```toml
+# ara.lock (excerpt)
+
+[[package]]
+name = "lib-a"
+version = "0.2.0"
+source = "workspace"       # ← local symlink, no hash needed
+dependencies = []
+
+[[package]]
+name = "zod"
+version = "3.23.8"
+source = "registry"        # ← fetched from npm, hash recorded
+package_hash = "sha256:def456..."
+integrity = "sha256:ghi789..."
+dependencies = []
+```
+
+Workspace entries carry no `package_hash` or `integrity` field because their content is not stored in Ara's content-addressable store — they live on disk as-is.
+
+## Comparison with pnpm
+
+Ara's `workspace:` protocol is intentionally compatible with pnpm's at the syntax level. The three forms (`*`, `^`, exact version) mean the same thing in both tools. The primary differences are operational:
+
+| Behaviour | pnpm | Ara |
+|-----------|------|-----|
+| Resolution strategy | Symlinking from a shared store | Direct symlink to source directory |
+| Publish replacement | `^<version>` on `pnpm publish` | Planned for `ara publish` (not yet released) |
+| Cross-manifest support | npm manifests only | `package.json` and `ara.toml` interchangeably |
+| Security scanning | Not performed | Scanned on every `ara install` |
+
+<Note>
+The publish-time version replacement behaviour (turning `workspace:^` into `^0.2.0` in the published tarball) is part of the planned `ara publish` command. It is not yet available in the current release.
+</Note>
+
+## Quick reference
+
+<CodeGroup>
+
+```json package.json (all three forms)
+{
+  "name": "my-app",
+  "dependencies": {
+    "ui":      "workspace:*",
+    "logger":  "workspace:^",
+    "config":  "workspace:1.0.0"
+  }
+}
+```
+
+```toml ara.toml (equivalent)
+[deps]
+ui     = { source = "workspace" }
+logger = { source = "workspace" }
+config = { source = "workspace" }
+```
+
+</CodeGroup>

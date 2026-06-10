@@ -1,0 +1,111 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Ara",
+  "projectDescription": "A modern, security-first package manager and build orchestrator for JavaScript/TypeScript, built in Rust with deterministic MVS resolution, content-addressed storage, and built-in static analysis against supply chain attacks.",
+  "theme": "aspen",
+  "primaryColor": "#7c7c80",
+  "lightColor": "#151c28",
+  "darkColor": "#f2f2f2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/manifest",
+              "concepts/lockfile",
+              "concepts/resolution",
+              "concepts/content-store"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/analysis-patterns",
+              "security/sandbox"
+            ]
+          },
+          {
+            "group": "Workspaces",
+            "pages": [
+              "workspaces/overview",
+              "workspaces/workspace-protocol"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/migrating-from-npm",
+              "guides/ci-cd",
+              "guides/monorepo"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/install",
+              "cli/add",
+              "cli/run",
+              "cli/x",
+              "cli/analyze",
+              "cli/gc"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "cli/configuration",
+              "cli/package-sources"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Built-in static security analysis that scans every dependency for 17+ suspicious patterns before install",
+    "Deterministic dependency resolution via Minimum Version Selection (MVS) inspired by Go Modules",
+    "Content-addressed store using SHA-256 hashes — identical packages are never duplicated",
+    "Sandboxed script execution using Linux seccomp-BPF with Hermetic, Restricted, and Open profiles",
+    "Native package.json support — works with existing npm projects with zero migration",
+    "workspace: protocol for monorepo dependency linking via live symlinks",
+    "Multiple package sources: npm registry, GitHub, Git, tarball URL, local path, workspace",
+    "Interactive security prompts with --non-interactive mode for CI environments"
+  ],
+  "publicApiSurface": [
+    "ara install",
+    "ara install --non-interactive",
+    "ara install --package-lock",
+    "ara add <spec>",
+    "ara add --save-dev",
+    "ara add --save-peer",
+    "ara add --save-optional",
+    "ara add --range=caret|patch|exact",
+    "ara add --force",
+    "ara add --refresh",
+    "ara add --offline",
+    "ara x <package> [args...]",
+    "ara run <script> --profile open|restricted|hermetic|custom",
+    "ara analyze [path]",
+    "ara audit [path]",
+    "ara gc",
+    "ara gc --dry-run",
+    "ara gc --aggressive"
+  ]
+}

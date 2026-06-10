@@ -1,0 +1,217 @@
+---
+title: "Using Ara in CI/CD Pipelines"
+sidebarTitle: "CI/CD"
+description: "Configure Ara for automated environments: silent installs, offline enforcement, cache reuse, and platform compatibility with --package-lock."
+---
+
+Ara is designed to work cleanly in automated pipelines with no interactive terminal. The same security analysis that prompts you in development still runs in CI — but with the right flags it reports findings silently instead of blocking the pipeline. This page covers the flags, caching strategy, and example workflows for common CI providers.
+
+## Key flags for CI environments
+
+<CardGroup cols={2}>
+
+<Card title="--non-interactive" icon="terminal">
+Disables all interactive prompts. Security findings are still detected and logged, but Ara never waits for user input. Use this in every CI install step.
+</Card>
+
+<Card title="--offline" icon="wifi-slash">
+Fails immediately if a package is not already in the local store cache. Useful for air-gapped runners or to enforce that no new packages are fetched at deploy time.
+</Card>
+
+<Card title="--force" icon="rotate">
+Re-downloads every package even if it is already cached. Use this when you suspect a cached tarball is stale or want to force fresh security scans on every run.
+</Card>
+
+<Card title="--package-lock" icon="lock">
+Generates a `package-lock.json` (lockfileVersion 3) alongside `ara.lock`. Required for deploy platforms that detect `package-lock.json` but do not yet recognize `ara.lock`.
+</Card>
+
+</CardGroup>
+
+## How security findings behave in CI
+
+When `--non-interactive` is passed, Ara never blocks installation waiting for a decision. Instead, it:
+
+1. Scans every package for the full set of 16+ security patterns.
+2. Logs each finding with its severity, pattern name, file, and line number.
+3. Automatically approves the package and continues.
+
+The findings still appear in your CI logs, making it easy to audit what was installed and whether any packages had suspicious patterns. To fail a build on high-severity findings, use `ara audit` as a separate step after install:
+
+```bash
+ara install --non-interactive
+ara audit   # exits non-zero if critical or high findings are present
+```
+
+<Note>
+`ara audit` and `ara analyze` run the same scanner. `audit` produces an extended report format. Both exit with a non-zero code when findings above the configured threshold are found, making them suitable for use as build gates.
+</Note>
+
+## Caching the Ara store
+
+Ara's content-addressable store lives at `~/.ara/store/`. Every tarball is stored by its SHA-256 hash, so identical packages across projects share the same entry. Caching this directory between runs avoids re-downloading packages that have already been verified.
+
+### GitHub Actions
+
+The following workflow installs dependencies, caches the Ara store, and optionally generates `package-lock.json` for platforms that need it.
+
+```yaml
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Ara store
+        uses: actions/cache@v4
+        with:
+          path: ~/.ara
+          key: ara-store-${{ runner.os }}-${{ hashFiles('ara.lock') }}
+          restore-keys: |
+            ara-store-${{ runner.os }}-
+
+      - name: Install Ara
+        run: curl -fsSL https://ara.pm/install.sh | sh
+
+      - name: Install dependencies
+        run: ara install --non-interactive
+
+      - name: Run tests
+        run: ara run test --profile restricted
+
+      - name: Security audit
+        run: ara audit
+```
+
+<Tip>
+Use `hashFiles('ara.lock')` as the cache key so the store is invalidated whenever your lockfile changes — i.e., whenever a dependency is added, removed, or upgraded.
+</Tip>
+
+### Offline enforcement after a warm cache
+
+For pipelines where you want to guarantee that no new packages are fetched at deploy time (only cached packages are used), restore the cache first and then install with `--offline`:
+
+```yaml
+      - name: Cache Ara store
+        uses: actions/cache@v4
+        with:
+          path: ~/.ara
+          key: ara-store-${{ runner.os }}-${{ hashFiles('ara.lock') }}
+
+      - name: Install dependencies (offline, cache must be warm)
+        run: ara install --non-interactive --offline
+```
+
+If any package in `ara.lock` is missing from the restored cache, the build fails immediately with a clear error rather than silently fetching from the network.
+
+## Deploy platform compatibility
+
+Some hosting platforms (Vercel, Netlify, Railway, Render) detect `package-lock.json` to identify the package manager and install strategy. Until these platforms add native `ara.lock` support, pass `--package-lock` to generate a compatible lockfile during your CI install step:
+
+```bash
+ara install --non-interactive --package-lock
+```
+
+This writes both `ara.lock` (Ara's native lockfile) and `package-lock.json` (lockfileVersion 3) to your working directory. Commit `ara.lock` to version control; the generated `package-lock.json` can be committed or generated fresh in CI depending on your platform's requirements.
+
+<Warning>
+The `--package-lock` flag is a temporary compatibility bridge. The generated `package-lock.json` does not contain all the information Ara uses internally (content hashes, security metadata, graph hash). Treat `ara.lock` as the authoritative lockfile.
+</Warning>
+
+## Recommended CI setup checklist
+
+<Steps>
+
+### Commit ara.lock to version control
+
+Run `ara install` locally and commit `ara.lock`. This ensures every CI run resolves the exact same dependency graph without querying the registry.
+
+```bash
+ara install
+git add ara.lock
+git commit -m "chore: add ara.lock"
+```
+
+### Always pass --non-interactive in CI
+
+Add `--non-interactive` to every `ara install` and `ara add` call in your pipeline. This prevents the runner from hanging on an interactive security prompt.
+
+```bash
+ara install --non-interactive
+```
+
+### Cache ~/.ara between runs
+
+Add a cache step that saves and restores `~/.ara`. Use `ara.lock`'s hash as the cache key so the cache is invalidated when dependencies change.
+
+### Add ara audit as a build gate
+
+Run `ara audit` after install to fail the build if critical or high findings are detected:
+
+```bash
+ara audit
+```
+
+### Add --package-lock if your deploy platform requires it
+
+If your hosting platform needs `package-lock.json`, generate it in CI:
+
+```bash
+ara install --non-interactive --package-lock
+```
+
+</Steps>
+
+## Full example: monorepo CI with workspace members
+
+This example shows a monorepo install where workspace members are symlinked and tests run per-package:
+
+```yaml
+name: Monorepo CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Ara store
+        uses: actions/cache@v4
+        with:
+          path: ~/.ara
+          key: ara-store-${{ runner.os }}-${{ hashFiles('ara.lock') }}
+          restore-keys: ara-store-${{ runner.os }}-
+
+      - name: Install Ara
+        run: curl -fsSL https://ara.pm/install.sh | sh
+
+      - name: Install all workspace dependencies
+        run: ara install --non-interactive
+
+      # Workspace members are live symlinks — no per-package install needed
+      - name: Test shared package
+        run: ara run test --profile restricted
+        working-directory: packages/shared
+
+      - name: Test UI package
+        run: ara run test --profile restricted
+        working-directory: packages/ui
+
+      - name: Test server package
+        run: ara run test --profile restricted
+        working-directory: packages/server
+
+      - name: Audit full install
+        run: ara audit
+```

@@ -1,0 +1,230 @@
+---
+title: "Dependency Resolution with Minimum Version Selection"
+sidebarTitle: "Resolution"
+description: "Ara uses MVS (Minimum Version Selection), inspired by Go Modules, to always pick the lowest satisfying version — producing a fully deterministic graph."
+---
+
+When you run `ara install`, Ara must decide which exact version of every dependency (and transitive dependency) to install. It does this with a deterministic algorithm called Minimum Version Selection (MVS), originally introduced by the Go Modules team. The core promise is simple: given the same `package.json` and `ara.lock`, any machine will always produce the exact same dependency graph. There are no floating ranges resolved differently depending on what the registry returned that day.
+
+## How MVS works
+
+Classical resolvers like npm's default to picking the *highest* version that satisfies a constraint, which makes the graph sensitive to registry state at the moment of installation. MVS flips this: it selects the *minimum* version that satisfies all constraints simultaneously imposed by every package in the graph.
+
+Consider a project where:
+- Your `package.json` requires `lib-c >= 2.0.0`
+- One of your dependencies also requires `lib-c >= 2.1.0`
+
+A maximum-version resolver would fetch the latest `lib-c` from the registry. MVS instead selects `2.1.0` — the lowest version that satisfies both constraints at once. This version was explicitly requested by something in the graph, so it is a known-good version rather than an untested latest.
+
+```
+package.json  →  lib-c >= 2.0.0
+dep-a v1.0.0  →  lib-c >= 2.1.0
+
+MVS selects: lib-c 2.1.0  ✓ (lowest version satisfying both)
+```
+
+<Tip>
+MVS's behaviour is inspired directly by Go Modules. If you're familiar with `go mod`, Ara's resolution will feel identical. The key insight is that every explicit version in the graph was put there intentionally by a human — MVS respects that intent.
+</Tip>
+
+---
+
+## Version constraints
+
+Ara parses npm-style constraint strings into typed `Constraint` values. The full set of supported constraint variants is:
+
+<Tabs>
+  <Tab title="Exact">
+    Pins to a single version. No other version satisfies this constraint.
+
+    ```
+    1.2.3
+    ```
+
+    Use case: pinning a critical dependency to a specific known-good release.
+  </Tab>
+  <Tab title="Caret (^)">
+    Allows changes that do not modify the leftmost non-zero digit.
+
+    ```
+    ^1.2.3   →  >=1.2.3 <2.0.0
+    ^0.1.2   →  >=0.1.2 <0.2.0  (major-zero: minor is locked)
+    ```
+
+    This is the default strategy used by `ara add` when you pass `--range=caret`.
+  </Tab>
+  <Tab title="Tilde (~)">
+    Allows patch-level changes only. Both major and minor must match exactly.
+
+    ```
+    ~1.2.3   →  >=1.2.3 <1.3.0
+    ```
+
+    Use case: accepting security patches while freezing the minor version.
+  </Tab>
+  <Tab title="Comparison">
+    Explicit comparisons against a version boundary.
+
+    ```
+    >=2.0.0    (greater than or equal)
+    >2.0.0     (strictly greater)
+    <=2.0.0    (less than or equal)
+    <2.0.0     (strictly less)
+    ```
+  </Tab>
+  <Tab title="Wildcard">
+    Matches any version within a major or minor family.
+
+    ```
+    *        →  any version
+    1.x      →  any 1.y.z
+    1.2.x    →  any 1.2.z
+    ```
+  </Tab>
+  <Tab title="And (compound)">
+    Two or more space-separated constraints that must all be satisfied simultaneously.
+
+    ```
+    >=1.0.0 <2.0.0
+    ```
+
+    Ara parses this as `And([GreaterOrEqual(1.0.0), LessThan(2.0.0)])` and checks both predicates.
+  </Tab>
+</Tabs>
+
+### Constraint satisfaction rules
+
+A version `v` satisfies a constraint according to these rules:
+
+| Constraint | Satisfied when |
+|---|---|
+| `Exact(x)` | `v == x` |
+| `Caret(x)` | same major (or same minor when major is 0), `v >= x` |
+| `Tilde(x)` | same major + minor, `v.patch >= x.patch` |
+| `GreaterOrEqual(x)` | `v >= x` |
+| `GreaterThan(x)` | `v > x` |
+| `LessOrEqual(x)` | `v <= x` |
+| `LessThan(x)` | `v < x` |
+| `Wildcard(major)` | `v.major == major` (and `v.minor == minor` if a minor is given) |
+| `And(cs)` | all constraints in `cs` are satisfied |
+
+<Note>
+Prerelease versions (e.g. `1.0.0-rc.1`) do not satisfy a constraint whose base version is a stable release. This follows npm semver convention: `^1.0.0` does **not** match `1.0.0-beta.1`.
+</Note>
+
+---
+
+## Version candidate selection
+
+For each package in the constraint list, Ara's `select_version` function determines the best candidate:
+
+1. Collect all constraints for the package from every requirer in the graph.
+2. For each constraint that names an explicit lower bound (`Exact`, `Caret`, `Tilde`, `GreaterOrEqual`, `GreaterThan`), extract the version as a candidate.
+3. Keep only candidates that satisfy **every** constraint in the list (the intersection of all requirements).
+4. Among the surviving candidates, pick the **smallest** — that is the MVS selection.
+
+`LessOrEqual`, `LessThan`, and `And` constraints contribute to the satisfaction check but do not themselves generate candidates.
+
+```
+Constraints for "some-lib":
+  requirer A:  >=2.0.0   → candidate 2.0.0
+  requirer B:  >=2.1.0   → candidate 2.1.0
+
+Check 2.0.0 against all:  >=2.0.0 ✓,  >=2.1.0 ✗  →  rejected
+Check 2.1.0 against all:  >=2.0.0 ✓,  >=2.1.0 ✓  →  accepted
+
+MVS selects: 2.1.0
+```
+
+---
+
+## Package sources
+
+Ara can resolve dependencies from multiple origin types. The `source` field in `package.json` (or as inferred from the spec string) determines which backend fetches the package.
+
+<CodeGroup>
+
+```json npm / registry
+{
+  "dependencies": {
+    "zod": "^3.23.0",
+    "@angular/core": "^17.0.0"
+  }
+}
+```
+
+```json GitHub
+{
+  "dependencies": {
+    "some-lib": "acme/some-lib#v2.1.0"
+  }
+}
+```
+
+```json Git URL
+{
+  "dependencies": {
+    "my-fork": "https://github.com/user/repo.git#main"
+  }
+}
+```
+
+```json Tarball URL
+{
+  "dependencies": {
+    "legacy-pkg": "https://cdn.example.com/legacy-pkg-1.0.0.tgz"
+  }
+}
+```
+
+```json Workspace
+{
+  "dependencies": {
+    "lib-a": "workspace:*"
+  }
+}
+```
+
+</CodeGroup>
+
+The full set of `SourceType` variants Ara recognises:
+
+| Source | String value | When used |
+|---|---|---|
+| `Workspace` | `workspace` | Local workspace member via `workspace:` protocol |
+| `Local` | `local` | Local filesystem path |
+| `Git` | `git` | Git repository URL |
+| `Github` | `github` | `owner/repo` or `owner/repo#ref` shorthand |
+| `Registry` | `registry` | Generic registry (non-npm) |
+| `Npm` | `npm` | npm public registry |
+| `Url` | `url` | Direct tarball or archive URL |
+
+---
+
+## Cycle detection
+
+After building the graph, Ara runs a depth-first cycle check. If any set of packages forms a circular dependency, Ara reports the cycle and aborts the install. The graph must be a directed acyclic graph (DAG) before `ara.lock` is written.
+
+---
+
+## Known limitations
+
+<Warning>
+Ara's resolver is honest about what it cannot yet do well. Keep these limitations in mind when migrating complex projects.
+</Warning>
+
+<Accordion title="Complex ranges have limited support">
+Constraints like `>=1.0.0 <2.0.0` are parsed as `And` constraints and the satisfaction check works correctly. However, MVS candidate selection only extracts lower bounds as candidates — it never queries the registry for the current highest matching release. This means a `LessThan` or `LessOrEqual` constraint alone cannot produce a candidate version; Ara will warn and skip the package.
+</Accordion>
+
+<Accordion title="|| (OR) combinators are not supported">
+npm semver supports `||` to express disjoint ranges, e.g. `^1.0.0 || ^2.0.0`. Ara does not parse `||` and will treat such strings as invalid. Packages with these ranges in their own `package.json` may resolve incorrectly.
+</Accordion>
+
+<Accordion title="No registry query during resolution">
+Ara's MVS implementation selects among versions that are already named in the constraint set. It does not currently query the npm registry to discover available releases. This means `>=1.0.0` resolves to exactly `1.0.0` rather than the latest `1.x` release. Practically, caret (`^`) and exact version constraints work as expected because they name a concrete minimum.
+</Accordion>
+
+<Accordion title="Prerelease versions are excluded by default">
+A constraint like `^1.0.0` will never match `1.1.0-beta.2`. If you need a prerelease, specify it exactly: `1.1.0-beta.2`.
+</Accordion>

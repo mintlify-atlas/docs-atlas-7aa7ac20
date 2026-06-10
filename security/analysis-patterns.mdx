@@ -1,0 +1,310 @@
+---
+title: "Security Patterns Detected by Ara's Scanner"
+sidebarTitle: "Analysis Patterns"
+description: "A reference for all 18 security patterns Ara detects, covering code execution, prototype pollution, credential access, weak crypto, and more."
+---
+
+Ara's analysis engine runs a set of compiled regex patterns against every source file in a package. Each pattern has a unique ID, a severity level, and a description of what it catches. Understanding these patterns helps you make informed decisions when Ara flags a dependency — and helps you write package code that doesn't trigger false positives.
+
+## How the scanner works
+
+Before any regex matching begins, the scanner collects the files it will analyze. It walks the package directory recursively and includes files that match these extensions:
+
+```
+.js  .ts  .jsx  .tsx  .mjs  .cjs  .mts  .cts
+```
+
+The scanner also reads `package.json` specifically to check for install scripts — but it uses string matching for that, not regex.
+
+Several categories of files are skipped outright:
+
+- **Binary files** — any file containing a null byte (`\0`) is treated as binary and skipped.
+- **Large files** — files larger than **1 MB** are skipped to keep scans fast.
+- **Declaration files** — `.d.ts`, `.d.mts`, and `.d.cts` files are type-only and skipped.
+- **Ignored directories** — `node_modules/`, `.git/`, `.svn/`, `.hg/`, `dist/`, `target/`, `build/`, `.next/`, `.cache/`, and `__pycache__/` are all excluded.
+
+When a pattern matches, it records the file path and the exact line number of the match. **Findings are deduplicated per file per pattern**: if the same pattern matches the same byte offset in the same file multiple times, only one finding is produced.
+
+## All patterns
+
+The table below lists all 18 patterns (17 code patterns + 1 `package.json` check), sorted by severity.
+
+| Pattern ID | Severity | What it detects |
+|---|---|---|
+| `eval-usage` | Critical | `eval()` calls — arbitrary code execution |
+| `new-function` | Critical | `new Function()` — dynamic code creation |
+| `child-process-exec` | High | `spawn`, `fork`, `execFile`, `execSync`, `spawnSync` — shell command execution |
+| `child-process-require` | High | `require('child_process')` — import of the child process module |
+| `vm-escape` | High | `vm.runInThisContext`, `vm.runInNewContext`, `vm.compileFunction`, `vm.createScript` |
+| `process-binding` | High | `process.binding()` — access to native Node.js internals |
+| `prototype-pollution` | High | `__proto__` assignment or use as a key |
+| `constructor-pollution` | High | `.constructor.prototype` manipulation |
+| `install-scripts` | High | `preinstall`, `install`, or `postinstall` keys in `package.json` |
+| `fs-dangerous-write` | Medium | `fs.writeFile`, `fs.writeFileSync`, `fs.appendFile`, `fs.appendFileSync` |
+| `fs-dangerous-delete` | Medium | `fs.unlink`, `fs.unlinkSync`, `fs.rm`, `fs.rmSync`, `fs.rmdir`, `fs.rmdirSync` |
+| `credential-access` | Medium | `process.env` access for `NODE_*`, `AWS_*`, `GITHUB_*`, `TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY` |
+| `alloc-unsafe` | Medium | `Buffer.allocUnsafe()`, `Buffer.allocUnsafeSlow()` — uninitialized memory allocation |
+| `dynamic-require` | Medium | `require()` with a non-literal argument |
+| `dynamic-import` | Medium | `import()` with a non-literal argument |
+| `weak-crypto` | Medium | `createHash('md5')`, `createHash('sha1')`, `createHash('ripemd160')` |
+| `math-random` | Low | `Math.random()` — not cryptographically secure |
+| `deprecated-cipher` | Low | `createCipher()`, `createDecipher()`, `createDecipheriv()` — deprecated Node.js cipher methods |
+
+## Pattern details by severity
+
+<Accordion title="Critical — Immediate code execution">
+  These patterns represent the highest risk. Any package triggering a `critical` finding is capable of executing arbitrary code at runtime and should be denied unless you have fully audited the usage.
+
+  **`eval-usage`** — matches any call to `eval()`:
+
+  ```javascript
+  // Triggers eval-usage
+  const result = eval('(' + userInput + ')');
+  eval(payload);
+  window.eval(code);
+
+  // Does NOT trigger (different word boundary)
+  evaluate(options);
+  ```
+
+  **`new-function`** — matches `new Function(...)` constructor calls, which compile and execute arbitrary strings as JavaScript:
+
+  ```javascript
+  // Triggers new-function
+  const fn = new Function('return x');
+  const fn2 = new Function(a, b, body);
+
+  // Does NOT trigger
+  new function() {}        // lowercase — anonymous constructor
+  Function.prototype.call  // prototype access, not construction
+  ```
+
+  A real-world example from the test fixtures showing combined `eval-usage` + dynamic string construction:
+
+  ```javascript
+  // node_modules/mal-obf/index.js
+  var _0x1234 = 'ZGVjb2RlIG1l';
+  var encoded = Buffer.from(_0x1234, 'base64').toString();
+  eval(encoded);           // eval-usage: Critical
+  ```
+</Accordion>
+
+<Accordion title="High — Significant attack surface">
+  `high` findings indicate real abuse potential that is highly context-dependent. A utility library that spawns child processes for legitimate build tooling is very different from a data-formatting library doing the same thing.
+
+  **`child-process-exec`** — matches common child process invocation methods. Note that `cp.exec()` is intentionally not matched (too many false positives from regex engines); `execSync` and `spawnSync` are matched:
+
+  ```javascript
+  // Triggers child-process-exec
+  child_process.execSync('ls -la');
+  spawn('bash', ['-c', cmd]);
+  cp.fork('child.js');
+  exec(cmd);               // bare exec() call
+
+  // Does NOT trigger
+  cp.exec(cmd);            // dot-prefixed exec — excluded by pattern design
+  re.exec(str);            // regex exec
+  execute();               // different name
+  ```
+
+  **`child-process-require`** — matches the module import itself, regardless of what method is called afterward:
+
+  ```javascript
+  // Triggers child-process-require
+  const cp = require('child_process');
+  const { exec } = require("child_process");
+  const { spawn } = require(`child_process`);
+  ```
+
+  **`vm-escape`** — matches the four `vm` module methods most commonly used to escape sandboxes:
+
+  ```javascript
+  // Triggers vm-escape
+  vm.runInThisContext(code);
+  vm.runInNewContext(code, context);
+  vm.compileFunction('return 1');
+  vm.createScript(src);
+
+  // Does NOT trigger
+  vm.run(code);            // not in the matched set
+  ```
+
+  **`process-binding`** — matches calls to `process.binding()`, which grants access to internal C++ bindings and is a known sandbox escape vector:
+
+  ```javascript
+  // Triggers process-binding
+  process.binding('spawn_sync');
+  process.binding('natives');
+
+  // Does NOT trigger
+  process.pid
+  process.env
+  ```
+
+  **`prototype-pollution`** — matches `__proto__` when followed by an assignment or used as a key:
+
+  ```javascript
+  // Triggers prototype-pollution
+  obj.__proto__ = maliciousObject;
+  { "__proto__": value }
+
+  // From test fixture (02-proto-pollution):
+  function merge(target, source) {
+    for (const key in source) {
+      target.__proto__[key] = source[key]; // prototype-pollution: High
+    }
+  }
+  ```
+
+  **`constructor-pollution`** — matches `.constructor.prototype` chaining:
+
+  ```javascript
+  // Triggers constructor-pollution
+  obj.constructor.prototype.isAdmin = true;
+  a.constructor.prototype.pollute = payload;
+
+  // Does NOT trigger
+  obj.constructor              // stops before .prototype
+  ```
+
+  **`install-scripts`** — detected by string matching inside `package.json`, not by regex over source code. Any package that defines `preinstall`, `install`, or `postinstall` in its `scripts` block triggers this finding:
+
+  ```json
+  {
+    "scripts": {
+      "postinstall": "node build.js"
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Medium — Suspicious but context-dependent">
+  `medium` findings are often legitimate in the right context but are common in supply-chain attack code. Evaluate the surrounding logic before approving.
+
+  **`fs-dangerous-write`** — matches synchronous and asynchronous file write operations:
+
+  ```javascript
+  // Triggers fs-dangerous-write
+  fs.writeFile(path, data, cb);
+  fs.writeFileSync('/etc/hosts', payload);
+  fs.appendFile(logPath, entry);
+  fs.appendFileSync(target, content);
+
+  // Does NOT trigger
+  fs.readFile(path, cb);
+  ```
+
+  **`fs-dangerous-delete`** — matches file and directory removal operations:
+
+  ```javascript
+  // Triggers fs-dangerous-delete
+  fs.unlink(filePath, cb);
+  fs.unlinkSync(target);
+  fs.rmSync('/important', { recursive: true });
+  fs.rmdir(dir, cb);
+  ```
+
+  **`credential-access`** — matches `process.env` access for sensitive-sounding variable names. The pattern looks for common prefixes and keywords:
+
+  ```javascript
+  // Triggers credential-access
+  process.env.NODE_ENV         // NODE_ prefix
+  process.env.AWS_SECRET_KEY   // AWS_ prefix
+  process.env.GITHUB_TOKEN     // GITHUB_ prefix
+  process.env.API_KEY          // API_KEY keyword
+  process.env.SECRET           // SECRET keyword
+  process.env.PASSWORD         // PASSWORD keyword
+  process.env.PRIVATE_KEY      // PRIVATE_KEY keyword
+
+  // Does NOT trigger
+  process.env.HOME
+  process.env.PATH
+
+  // From test fixture (04-credential-access):
+  const token = process.env.AWS_SECRET_ACCESS_KEY;   // credential-access: Medium
+  ```
+
+  **`alloc-unsafe`** — `Buffer.allocUnsafe` skips zero-initialization, leaving old memory contents readable. If used to allocate a buffer that is later sent over the network or written to a file, it can leak sensitive data:
+
+  ```javascript
+  // Triggers alloc-unsafe
+  const buf = Buffer.allocUnsafe(1024);
+  const buf2 = Buffer.allocUnsafeSlow(size);
+
+  // Does NOT trigger
+  Buffer.alloc(1024);      // zero-initialized
+  Buffer.from(data);       // copies existing data
+  ```
+
+  **`dynamic-require`** and **`dynamic-import`** — match `require()` and `import()` calls where the argument is not a string literal. Static strings are safe (the module is known at audit time); dynamic values can load arbitrary code:
+
+  ```javascript
+  // Triggers dynamic-require
+  require(variable);
+  require( pluginName );
+
+  // Does NOT trigger
+  require('fs');
+  require("path");
+  require(`crypto`);
+
+  // Triggers dynamic-import
+  import(moduleName);
+
+  // Does NOT trigger
+  import('lodash');
+  ```
+
+  **`weak-crypto`** — matches `createHash` calls using broken hash algorithms. MD5 and SHA-1 have known collision attacks; RIPEMD-160 is no longer recommended:
+
+  ```javascript
+  // Triggers weak-crypto
+  crypto.createHash('md5');
+  crypto.createHash("sha1");
+  crypto.createHash(`ripemd160`);
+
+  // Does NOT trigger
+  crypto.createHash('sha256');
+  crypto.createHash('sha512');
+  ```
+</Accordion>
+
+<Accordion title="Low — Informational">
+  `low` findings are rarely indicative of malicious intent on their own, but they are worth noting in security-sensitive code.
+
+  **`math-random`** — `Math.random()` uses a non-cryptographic PRNG. Using it to generate tokens, session IDs, or nonces is a security bug:
+
+  ```javascript
+  // Triggers math-random
+  Math.random();
+  Math.floor(Math.random() * 10);
+
+  // Does NOT trigger
+  crypto.randomBytes(16);
+  crypto.randomUUID();
+  ```
+
+  **`deprecated-cipher`** — matches the deprecated `createCipher`, `createDecipher`, and `createDecipheriv` Node.js APIs. These were removed in Node.js 22 because they derive keys without a salt, making them vulnerable to dictionary attacks:
+
+  ```javascript
+  // Triggers deprecated-cipher
+  crypto.createCipher('aes-128-cbc', key);
+  crypto.createDecipher('aes-256-cbc', key);
+  crypto.createDecipheriv(alg, key, iv);
+
+  // Does NOT trigger
+  crypto.createCipheriv('aes-256-gcm', key, iv);   // the 'iv' variant is safe
+  ```
+</Accordion>
+
+## Interpreting findings in context
+
+A finding is a signal, not a verdict. The same `child-process-exec` call in a test runner framework and in a data-validation library mean very different things. When reviewing findings, ask:
+
+- **Is this call site reachable from user-controlled input?** An `eval()` deep in a template engine is far more dangerous than one used to parse a hardcoded configuration string.
+- **Does the package's stated purpose require this capability?** A build tool importing `child_process` is expected; a currency formatter is not.
+- **Is the pattern in the package's own code or in a vendored dependency?** Ara skips `node_modules/` sub-directories inside packages, so findings only reflect the package's own files.
+
+<Tip>
+  Use `ara analyze ./node_modules/<package>` to re-scan any installed package at any time, or `ara audit` to get a structured report you can pipe into other tools.
+</Tip>

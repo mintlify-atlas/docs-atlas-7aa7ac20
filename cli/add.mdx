@@ -1,0 +1,193 @@
+---
+title: "ara add — Add Packages from Any Source to Your Project"
+sidebarTitle: "add"
+description: "Install one or more packages by spec into your project. Supports npm, GitHub, git URLs, tarballs, and local paths. Runs security scanning before extraction and updates package.json."
+---
+
+`ara add` installs one or more packages directly by specifier and saves them to your `package.json`. It resolves the spec, checks the content-addressed cache, downloads the tarball if needed, scans the package for security issues, extracts it to `node_modules/`, and updates both `package.json` and `ara.lock` — all in a single command. Multiple packages can be added in one invocation.
+
+<Note>
+  `ara install <spec>` is a direct alias for `ara add <spec>`. Both commands are identical in behavior.
+</Note>
+
+## Usage
+
+```bash
+ara add <spec> [spec...] [flags]
+```
+
+At least one package specifier is required.
+
+## Supported spec formats
+
+| Format | Example | Resolves to |
+|--------|---------|-------------|
+| `name` | `react` | Latest version from the npm registry |
+| `name@version` | `react@18.2.0` | Exact version from the npm registry |
+| `name@^range` | `zod@^3.23.0` | Registry version matching the semver range |
+| `@scope/name` | `@angular/core` | Scoped package from the npm registry (latest) |
+| `@scope/name@version` | `@angular/core@17.0.0` | Scoped package at an exact version |
+| `user/repo` | `facebook/react` | GitHub repository at the default branch |
+| `user/repo#ref` | `facebook/react#v18.0.0` | GitHub repository at a specific tag or branch |
+| Git URL | `https://github.com/user/repo.git` | Git repository at HEAD |
+| Git URL + ref | `https://github.com/user/repo.git#v1.0` | Git repository at a specific tag or commit |
+| Tarball URL | `https://example.com/pkg.tgz` | Direct tarball download |
+| Local tarball | `./downloads/pkg.tar.gz` | Local `.tar.gz` or `.tgz` file |
+
+## Flags
+
+<ParamField path="--save-dev" type="boolean" default="false">
+  Save the package(s) under `devDependencies` in `package.json` instead of `dependencies`.
+</ParamField>
+
+<ParamField path="--save-peer" type="boolean" default="false">
+  Save the package(s) under `peerDependencies` in `package.json`.
+</ParamField>
+
+<ParamField path="--save-optional" type="boolean" default="false">
+  Save the package(s) under `optionalDependencies` in `package.json`.
+</ParamField>
+
+<ParamField path="--range" type="string" default="exact">
+  Controls the version range prefix written to `package.json`. Accepted values:
+  - `exact` (default) — records the resolved version as-is, e.g. `1.2.3`
+  - `caret` — prefixes with `^`, e.g. `^1.2.3`
+  - `patch` — prefixes with `~`, e.g. `~1.2.3`
+</ParamField>
+
+<ParamField path="--force" type="boolean" default="false">
+  Re-download the package even if a cached copy exists in the content-addressed store. Use this if you suspect the tarball is stale or corrupted.
+</ParamField>
+
+<ParamField path="--refresh" type="boolean" default="false">
+  Bypass the cache for mutable references such as branch names and floating tags. Guarantees you get the latest commit on a branch even when a cached version exists.
+</ParamField>
+
+<ParamField path="--offline" type="boolean" default="false">
+  Fail immediately if the requested package is not already present in the local cache. No network requests are made in offline mode.
+</ParamField>
+
+<ParamField path="--non-interactive" type="boolean" default="false">
+  Suppress interactive security prompts. Packages with findings are auto-approved and a warning is printed instead of asking for your decision.
+</ParamField>
+
+<ParamField path="--package-lock" type="boolean" default="false">
+  Generate a `package-lock.json` (lockfile version 3) in addition to `ara.lock`. Temporary compatibility flag for deploy platforms that do not yet support `ara.lock`.
+</ParamField>
+
+## Examples
+
+<CodeGroup>
+
+```bash npm registry
+# Latest version
+ara add react
+
+# Exact version
+ara add react@18.2.0
+
+# Semver range (resolved to latest matching)
+ara add zod@^3
+
+# Scoped package
+ara add @types/node --save-dev
+
+# Multiple packages at once
+ara add react zod typescript
+```
+
+```bash Range strategies
+# Save with caret prefix: "zod": "^3.23.8"
+ara add --range=caret zod
+
+# Save with patch prefix: "zod": "~3.23.8"
+ara add --range=patch zod
+
+# Save as exact version: "zod": "3.23.8"
+ara add zod
+```
+
+```bash Dev and peer dependencies
+# Save under devDependencies
+ara add --save-dev eslint prettier
+
+# Save under peerDependencies
+ara add --save-peer react
+
+# Save under optionalDependencies
+ara add --save-optional fsevents
+```
+
+```bash GitHub and git sources
+# GitHub shorthand — default branch
+ara add facebook/react
+
+# GitHub with a specific tag
+ara add facebook/react#v18.0.0
+
+# Full git URL at HEAD
+ara add https://github.com/colinhacks/zod.git
+
+# Full git URL at a specific tag
+ara add https://github.com/colinhacks/zod.git#v3.23.8
+```
+
+```bash Tarballs and local files
+# Remote tarball
+ara add https://example.com/my-package.tgz
+
+# Local tarball
+ara add ./downloads/my-package.tar.gz
+```
+
+```bash Cache control
+# Re-download even if cached
+ara add zod --force
+
+# Re-fetch a mutable reference (e.g. a branch)
+ara add facebook/react#main --refresh
+
+# Fail if not already in cache
+ara add zod --offline
+```
+
+</CodeGroup>
+
+## How add works
+
+For each spec provided, `ara add` runs the following steps:
+
+1. **Parse** — determines the target type (npm, GitHub, git, tarball URL, or local path).
+2. **Resolve** — queries the registry for the latest or best-matching version, or uses the provided ref directly for git and GitHub targets.
+3. **Cache check** — skips the network download if the package is already in the content-addressed store (unless `--force` or `--refresh` is passed).
+4. **Fetch** — downloads the tarball from the appropriate backend.
+5. **Analyze** — scans the package's source files for 16+ security patterns.
+6. **Prompt** — if suspicious patterns are detected and `--non-interactive` is not set, you are asked to allow or deny the package.
+7. **Extract** — approved packages are written to `node_modules/` and stored in the content-addressed store.
+8. **Update** — `package.json` is updated with the new dependency entry.
+9. **Lock** — `ara.lock` is rewritten with the full resolved graph.
+
+After direct dependencies are installed, Ara also resolves and installs their transitive dependencies.
+
+## Security prompt
+
+When a package has findings above the `medium` risk level, Ara pauses and asks for your decision:
+
+```
+🔍 Scanning some-pkg@2.0.0...
+  ⚠  child-process-exec (high) — shell command execution in lib/build.js:17
+  ⚠  credential-access (high) — process.env access in lib/config.js:5
+
+Allow some-pkg@2.0.0?
+  [y] Yes, install anyway
+  [n] No, skip this package
+  [s] Sandbox (restrict at runtime)
+> y
+  ✓ some-pkg@2.0.0 (sha256-abc123...) — allowed
+```
+
+Pass `--non-interactive` in CI to suppress this prompt and auto-approve all findings.
+
+<Warning>
+  Packages denied at the security prompt are removed from `node_modules/` immediately and are **not** written to `package.json` or `ara.lock`.
+</Warning>

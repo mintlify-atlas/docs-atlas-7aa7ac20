@@ -1,0 +1,118 @@
+---
+title: "ara gc — Garbage Collect the Content-Addressed Package Store"
+sidebarTitle: "gc"
+description: "Remove orphaned objects, extracted directories, and stale temp files from ~/.ara/store. Use --dry-run to preview removals and --aggressive to sweep all objects unreferenced by any lockfile."
+---
+
+`ara gc` cleans up the content-addressed package store that Ara maintains at `~/.ara/store/`. Over time this store accumulates objects that are no longer referenced by any lockfile — packages from deleted projects, old versions replaced by upgrades, or failed installs that left partial artifacts. Running `ara gc` reclaims that disk space by removing orphaned blobs, extracted directory caches, stale temporary files, and (with `--aggressive`) stored dependency graph snapshots.
+
+## Understanding the store
+
+Ara stores every downloaded package by its SHA-256 hash, not by name and version. When you install `zod@3.23.8`, Ara computes `sha256:<hex>` for the tarball and writes it to `~/.ara/store/objects/<prefix>/<hash>`. The same hash is also registered in a SQLite index at `~/.ara/store/index.db`, which maps cache keys like `npm:zod@3.23.8` to their hashes.
+
+This design means:
+
+- **Identical packages are never duplicated.** If two projects both depend on `zod@3.23.8`, the tarball is stored exactly once.
+- **Integrity is implicit.** Any mismatch between the stored content and its hash indicates tampering or corruption.
+- **Rollbacks are cheap.** Downgrading a dependency doesn't require re-downloading if the old hash is still in the store.
+
+The tradeoff is that the store grows indefinitely unless you run `ara gc`.
+
+## Usage
+
+```bash
+ara gc [flags]
+```
+
+## Flags
+
+<ParamField path="--dry-run" type="boolean" default="false">
+  Preview what would be removed without deleting anything. Prints a count and total byte size of each category of objects that would be affected. Safe to run at any time — no files are modified.
+</ParamField>
+
+<ParamField path="--aggressive" type="boolean" default="false">
+  Remove **all** objects not referenced by any active lockfile entry, including extracted directory caches and stored dependency graph snapshots. This is more thorough than the default sweep and will require re-downloading packages that are still used but whose lockfile entries have been pruned from the index. Use when you want to reclaim maximum disk space.
+</ParamField>
+
+## What gets collected
+
+`ara gc` sweeps several distinct areas of the store:
+
+| Area | Default sweep | Aggressive sweep |
+|------|--------------|-----------------|
+| Orphaned tarballs in `objects/` | Objects not in the index, plus index entries with no lockfile reference | All objects not referenced by any active lockfile entry |
+| Extracted directories in `extracted/` | Directories whose hash has no matching index entry | All extracted directories not in active lockfile entries |
+| Stale files in `temp/` | Files older than 1 hour | Files older than 1 hour (same) |
+| Dependency graph snapshots in `graphs/` | Not collected | All graph snapshots |
+
+After collecting objects and extracted directories, Ara also removes orphan entries from the SQLite index itself.
+
+## Examples
+
+<CodeGroup>
+
+```bash Preview before cleaning
+# See what would be removed — nothing is deleted
+ara gc --dry-run
+```
+
+```bash Normal garbage collection
+# Remove orphaned objects not referenced by any index entry
+ara gc
+```
+
+```bash Aggressive full sweep
+# Remove everything not referenced by an active lockfile
+ara gc --aggressive
+```
+
+```bash Dry-run aggressive sweep
+# Preview the aggressive sweep without deleting
+ara gc --dry-run --aggressive
+```
+
+</CodeGroup>
+
+## Sample output
+
+```
+$ ara gc --dry-run
+  Would remove 14 orphaned objects (18432 bytes)
+  Would remove 3 extracted directories (4096 bytes)
+  Would remove 2 stale temp files
+Dry run complete. Would remove 19 items (22528 bytes)
+```
+
+```
+$ ara gc
+  Removed 14 orphaned objects (18432 bytes)
+  Removed 3 extracted directories (4096 bytes)
+  Removed 2 stale temp files
+Done. Removed 19 items (22528 bytes freed)
+```
+
+```
+$ ara gc
+Store is clean. No orphaned objects found.
+```
+
+## When to run gc
+
+`ara gc` is not run automatically. Consider running it:
+
+- After removing a project or deleting a `node_modules/` directory.
+- After upgrading many dependencies across several projects.
+- Before a disk space audit to understand how much Ara is consuming.
+- Periodically in long-lived development machines as routine housekeeping.
+
+<Note>
+  `ara gc` only touches Ara's own store at `~/.ara/store/`. It never modifies your project's `node_modules/`, `package.json`, or `ara.lock`. Running it on a project directory makes no sense — it always operates on the global store.
+</Note>
+
+<Warning>
+  `--aggressive` will remove tarballs and extracted caches for packages that are still referenced in your projects' `ara.lock` files if those lockfile entries are no longer in the active index. The next `ara install` on those projects will re-download the affected packages from the network.
+</Warning>
+
+<Tip>
+  Run `ara gc --dry-run` first to understand the impact before committing to a deletion. This is especially important before using `--aggressive`.
+</Tip>

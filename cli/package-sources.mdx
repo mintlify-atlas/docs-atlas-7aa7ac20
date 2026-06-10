@@ -1,0 +1,228 @@
+---
+title: "Package Sources: npm, Git, GitHub, and Local"
+sidebarTitle: "Package Sources"
+description: "Ara resolves dependencies from six source backends: the npm registry, GitHub archives, Git repositories, tarball URLs, local paths, and workspace members."
+---
+
+Ara can fetch packages from six distinct backends, each identified by how you write the spec string passed to `ara add`. The correct backend is inferred automatically from the spec format — you never need to specify a `--type` flag. This page documents what each source does, the exact spec syntax it accepts, and any special caching or reference behavior you should know about.
+
+---
+
+## npm Registry
+
+The npm registry source handles all standard JavaScript packages published to `registry.npmjs.org`. It is the default backend: any spec that does not match a URL, file path, or `user/repo` pattern is treated as an npm package name.
+
+Ara queries the registry's JSON metadata endpoint to resolve version constraints (using `dist-tags.latest` when available, falling back to the highest semver), then constructs the tarball URL in the standard npm format. Registry metadata is cached locally in `~/.ara/cache/metadata/` with a 7-day TTL to avoid redundant HTTP requests.
+
+**Spec format:**
+
+| Spec | Resolves to |
+|---|---|
+| `react` | Latest version (via `dist-tags.latest`) |
+| `react@18.2.0` | Exact version `18.2.0` |
+| `react@^18` | Highest version satisfying `^18` |
+| `zod@~3.23` | Highest version satisfying `~3.23` |
+| `@scope/name` | Latest scoped package |
+| `@angular/core@17.0.0` | Exact scoped package version |
+
+```bash
+ara add react                  # latest
+ara add react@18.2.0           # exact version
+ara add zod@^3                 # range — resolved to highest matching
+ara add --save-dev typescript  # save to devDependencies
+ara add @angular/core@^17      # scoped package with range
+```
+
+<Note>
+  Ara uses Minimum Version Selection (MVS) for resolution: given a constraint, it picks the **highest published version** that satisfies it, not the absolute latest. This matches npm's behavior for `^` and `~` ranges while keeping the resolved graph deterministic.
+</Note>
+
+<Warning>
+  Ara only supports the public npm registry (`registry.npmjs.org`). There is no support for private registry authentication, `.npmrc` credential files, or scoped packages hosted on a private registry. If your project depends on private packages, Ara cannot install them today.
+</Warning>
+
+---
+
+## GitHub Shorthand
+
+The GitHub source fetches a repository archive directly from the GitHub API using the `GET /repos/{owner}/{repo}/tarball/{ref}` endpoint. No `git` binary is required on the host machine.
+
+Specs are recognized as GitHub shorthands when they contain exactly one `/` and do not start with `@` (which would indicate a scoped npm package). The optional `#ref` fragment pins the download to a specific tag, branch, or commit SHA.
+
+**Spec format:**
+
+| Spec | Resolves to |
+|---|---|
+| `user/repo` | Default branch (`HEAD`) |
+| `user/repo#v1.2.0` | Tag `v1.2.0` |
+| `user/repo#main` | Branch `main` |
+| `user/repo#abc1234` | Commit `abc1234` |
+
+```bash
+ara add facebook/react                  # default branch
+ara add sindresorhus/got#v14.0.0        # pinned to a tag
+ara add nicolo-ribaudo/babel#fix/crash  # pinned to a branch
+```
+
+<Warning>
+  Branch refs like `main` or `develop` are **mutable** — the same ref may resolve to a different commit each time. Pass `--refresh` to force Ara to re-fetch a branch even if it is already cached. Without `--refresh`, Ara uses the cached tarball if one exists for that ref.
+</Warning>
+
+---
+
+## Git URL
+
+The Git URL source clones a repository using the `git` binary and packages the working tree as a tarball. Unlike the GitHub shorthand, this backend works with any Git host (GitHub, GitLab, Bitbucket, self-hosted Gitea, etc.) and also supports SSH URLs.
+
+A spec is treated as a Git URL when it contains `://` (e.g. `https://`, `git+https://`, `ssh://`) or uses the SCP-style SSH syntax (`git@host:user/repo.git`). Bare domain paths ending in `.git` (e.g. `bitbucket.org/user/repo.git`) are also recognized without a protocol prefix.
+
+When a `#ref` fragment is present, Ara performs a shallow `git fetch --depth 1` for that specific ref and checks it out, keeping the operation fast. Without a ref, Ara shallow-clones the default branch.
+
+**Spec format:**
+
+| Spec | Resolves to |
+|---|---|
+| `https://github.com/user/repo.git` | Default branch |
+| `https://github.com/user/repo.git#v1.0` | Tag `v1.0` |
+| `https://github.com/user/repo.git#abc123` | Commit `abc123` |
+| `git@github.com:user/repo.git` | Default branch via SSH |
+| `git@github.com:user/repo.git#develop` | Branch `develop` via SSH |
+| `git+https://github.com/user/repo.git` | Default branch (explicit `git+` prefix) |
+
+```bash
+ara add https://github.com/colinhacks/zod.git
+ara add https://github.com/colinhacks/zod.git#v3.23.8
+ara add git@github.com:expressjs/express.git#5.0.0
+```
+
+<Note>
+  The `git` binary must be available on `$PATH` for this source to work. Ara shells out to `git clone`, `git init`, `git fetch`, and `git checkout` — it does not bundle a Git implementation.
+</Note>
+
+<Warning>
+  Like GitHub shorthands, branch refs are mutable. Pass `--refresh` when you want Ara to re-fetch the tip of a branch rather than using a cached clone.
+</Warning>
+
+---
+
+## Tarball URL
+
+The tarball URL source downloads a `.tgz` or `.tar.gz` archive directly from an HTTPS endpoint and installs it without any version resolution step. The URL itself acts as the package identity.
+
+A spec is recognized as a tarball URL when it contains `://` and ends with `.tgz` or `.tar.gz`. Ara reads `package.json` from inside the downloaded archive to discover the package name and version, using the standard npm convention of looking for `package/package.json` first, then falling back to a top-level `package.json`.
+
+**Spec format:**
+
+| Spec | Example |
+|---|---|
+| `https://…/pkg.tgz` | `https://example.com/releases/my-lib-2.0.0.tgz` |
+| `https://…/pkg.tar.gz` | `https://cdn.example.com/packages/util-1.0.tar.gz` |
+
+```bash
+ara add https://example.com/releases/my-lib-2.0.0.tgz
+ara add https://cdn.example.com/packages/util-1.0.tar.gz
+```
+
+<Tip>
+  Because there is no version resolution step, tarball URLs are always reproducible as long as the remote file does not change. For maximum determinism, prefer URLs that embed the version in the filename or that point to an immutable release artifact.
+</Tip>
+
+---
+
+## Local Tarball (Local Path)
+
+The local path source reads an archive from the local filesystem. It shares the same format detection as the tarball URL source: any spec ending in `.tgz` or `.tar.gz` that does not start with a protocol is treated as a local file path.
+
+Ara packages the directory into a gzip-compressed tar archive in memory and processes it through the same security scanner as all other sources. The path can be relative (`./downloads/my-pkg.tgz`) or absolute (`/tmp/build/my-pkg.tar.gz`).
+
+**Spec format:**
+
+| Spec | Resolves from |
+|---|---|
+| `./downloads/pkg.tgz` | Relative path from current directory |
+| `./releases/lib-1.2.3.tar.gz` | Relative path, `.tar.gz` extension |
+| `/tmp/build/my-pkg.tgz` | Absolute path |
+
+```bash
+ara add ./downloads/my-lib.tgz
+ara add ./vendor/legacy-package.tar.gz
+ara add /tmp/build-output/dist.tgz
+```
+
+<Note>
+  The local tarball source does not watch the filesystem for changes. If you update the archive file, you must re-run `ara add` (with `--force` to bypass the cache) to pick up the new contents.
+</Note>
+
+---
+
+## Workspace
+
+The workspace source is not used with `ara add` — it is resolved automatically by `ara install` when a dependency version in `package.json` starts with `workspace:`. Workspace members are discovered by expanding the glob patterns in the `workspaces` field.
+
+Instead of downloading a tarball, Ara creates a **live symlink** from `node_modules/<name>` to the member's directory on disk. This means that edits to the member's source files are immediately visible to all consumers without needing to reinstall.
+
+**Version string forms:**
+
+| Version in `package.json` | Behavior |
+|---|---|
+| `workspace:*` | Always resolves to the local workspace member, any version |
+| `workspace:^` | Resolves locally; replaced with `^<version>` on publish |
+| `workspace:1.2.3` | Pins to exact version declared in the member's `package.json` |
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "ui":     "workspace:*",
+    "server": "workspace:^",
+    "zod":    "^3.0.0"
+  }
+}
+```
+
+```bash
+# Installs workspace symlinks + registry packages in one step
+ara install
+```
+
+<Tip>
+  Workspace dependencies appear in `ara.lock` with `source = "workspace"`, while registry dependencies show `source = "registry"`. This makes it easy to audit which packages came from local code and which came from the network.
+</Tip>
+
+---
+
+## Source summary
+
+| Source | Spec example | How Ara fetches it |
+|---|---|---|
+| npm Registry | `zod@^3` | HTTP tarball from `registry.npmjs.org` |
+| GitHub | `user/repo#v1.0` | GitHub API archive endpoint |
+| Git | `https://host/repo.git#ref` | `git clone` / `git fetch --depth 1` |
+| Tarball URL | `https://host/pkg.tgz` | Direct HTTP download |
+| Local tarball | `./pkg.tgz` | Read from local filesystem |
+| Workspace | `workspace:*` | Live symlink to member directory |
+
+---
+
+## Cache and refresh flags
+
+Ara caches downloaded packages in a content-addressable store keyed by SHA-256 hash. For npm registry metadata, a separate disk cache in `~/.ara/cache/metadata/` is maintained with a 7-day TTL.
+
+Two flags control this caching behavior:
+
+<ParamField query="--force" type="flag">
+  Re-download a package even if its tarball already exists in the local store. Useful when you suspect a cached file is corrupted or when a tarball URL points to a file that has been silently updated in place.
+</ParamField>
+
+<ParamField query="--refresh" type="flag">
+  Re-fetch a mutable reference (branch name or floating tag) even if it was previously cached. Without this flag, Ara uses the cached download for any ref it has seen before.
+
+  Relevant for GitHub, Git URL, and tarball URL sources where the remote content can change without the spec string changing.
+</ParamField>
+
+```bash
+ara add user/repo#main --refresh   # always fetch the latest tip of main
+ara add https://host/nightly.tgz --force  # bypass cache, re-download
+```

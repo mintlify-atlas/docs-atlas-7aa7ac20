@@ -1,0 +1,262 @@
+---
+title: "Managing Monorepos with Ara Workspaces"
+sidebarTitle: "Overview"
+description: "Learn how Ara discovers and links workspace members in a monorepo, from glob patterns in package.json to live symlinks in node_modules."
+---
+
+Ara has first-class support for monorepo layouts through its workspace system. A workspace is a root manifest — either a `package.json` or an `ara.toml` — that declares glob patterns pointing to member packages within the same repository. When you run `ara install`, Ara expands those globs, registers every discovered member as an implicit local dependency, and wires them together as live symlinks inside `node_modules`. No separate linking step, no stale copies — members are always in sync with their source directories.
+
+## Declaring workspaces
+
+The `workspaces` field in your root `package.json` accepts an array of glob patterns. Each pattern is expanded against the filesystem to discover member package directories.
+
+```json
+{
+  "name": "my-mono",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+```
+
+<Tip>
+Mark the root manifest `"private": true` to prevent accidentally publishing the monorepo root itself to a registry.
+</Tip>
+
+Ara also accepts the Yarn-style object form for `workspaces`, reading from its `packages` key:
+
+```json
+{
+  "name": "my-mono",
+  "version": "0.1.0",
+  "workspaces": {
+    "packages": ["packages/*"],
+    "nohoist": []
+  }
+}
+```
+
+### Declaring workspaces in ara.toml
+
+If you prefer Ara's native manifest format, list members explicitly under `[workspace]`:
+
+```toml
+# ara.toml
+[project]
+name = "my-mono"
+version = "0.1.0"
+
+[workspace]
+members = ["packages/ui", "packages/server"]
+```
+
+<Note>
+The `ara.toml` form takes explicit paths rather than globs — each entry must resolve directly to a package directory. Use `package.json` with glob patterns when your layout has many members under a shared directory.
+</Note>
+
+## Directory structure
+
+A typical Ara monorepo looks like this:
+
+```
+my-mono/
+├── package.json          # root manifest — declares workspaces
+├── ara.lock              # lockfile committed to version control
+└── packages/
+    ├── ui/
+    │   └── package.json  # member: { "name": "ui", "version": "1.0.0" }
+    └── server/
+        └── package.json  # member: depends on "ui" via workspace:*
+```
+
+The root `package.json` lists the glob pattern; each subdirectory is an independent package with its own manifest:
+
+```json
+// package.json — root
+{
+  "name": "my-mono",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "zod": "^3.0.0"
+  }
+}
+```
+
+```json
+// packages/ui/package.json
+{
+  "name": "ui",
+  "version": "1.0.0"
+}
+```
+
+```json
+// packages/server/package.json
+{
+  "name": "server",
+  "version": "0.1.0",
+  "dependencies": {
+    "ui": "workspace:*",
+    "zod": "^3.0.0"
+  }
+}
+```
+
+## Mixed manifests
+
+Workspace members can use either `package.json` or `ara.toml` — the two formats can coexist freely within the same workspace. Ara detects which format each member uses and parses accordingly.
+
+```
+my-mono/
+├── package.json               # root — package.json
+└── packages/
+    ├── pkg-a/
+    │   └── ara.toml           # member — ara.toml
+    ├── pkg-b/
+    │   └── ara.toml           # member — ara.toml
+    └── pkg-c/
+        └── package.json       # member — package.json
+```
+
+This is particularly useful when migrating an existing npm project to Ara incrementally — you can add `ara.toml` to individual packages without touching the others.
+
+## How ara install works for workspaces
+
+Running `ara install` at the monorepo root triggers a multi-stage process:
+
+<Steps>
+  <Step title="Parse the root manifest">
+    Ara reads the root `package.json` (or `ara.toml`) and extracts the `workspaces` glob patterns along with any root-level dependencies.
+  </Step>
+  <Step title="Expand workspace members">
+    Each glob pattern is expanded against the filesystem. Every matching directory that contains a manifest becomes a member. Ara registers an implicit dependency for each member so it is included in the resolution graph.
+  </Step>
+  <Step title="Resolve all dependencies">
+    Ara runs Minimum Version Selection (MVS) across the entire dependency graph — root deps, member deps, and cross-member references included.
+  </Step>
+  <Step title="Symlink workspace members">
+    Each workspace member is installed as a **live symlink** in `node_modules`. For example, `packages/ui` becomes `node_modules/ui → ../../packages/ui`. No tarball is created; changes to the member's source files are immediately visible to all consumers.
+  </Step>
+  <Step title="Fetch and extract registry packages">
+    Non-workspace dependencies are downloaded, security-scanned, and extracted to `node_modules` as usual.
+  </Step>
+  <Step title="Write the lockfile">
+    Ara records every resolved dependency — workspace members and registry packages — in `ara.lock` for reproducibility.
+  </Step>
+</Steps>
+
+```bash
+ara install                   # interactive — prompts on security findings
+ara install --non-interactive # silent — ideal for CI
+```
+
+After install, `node_modules` looks like:
+
+```
+node_modules/
+├── ui -> ../../packages/ui       # live symlink — workspace member
+├── server -> ../../packages/server  # live symlink — workspace member
+└── zod/                          # fetched from npm registry
+```
+
+## Cross-references between members
+
+Members can depend on each other using the `workspace:` protocol. The `03-cross-refs` fixture demonstrates a chain where `pkg-a` depends on `pkg-b`, and `pkg-b` depends on `pkg-c`:
+
+<Tabs>
+  <Tab title="ara.toml (root)">
+    ```toml
+    [project]
+    name = "cross-refs"
+    version = "0.1.0"
+
+    [workspace]
+    members = ["packages/pkg-a", "packages/pkg-b", "packages/pkg-c"]
+    ```
+  </Tab>
+  <Tab title="pkg-a/ara.toml">
+    ```toml
+    [project]
+    name = "pkg-a"
+    version = "0.1.0"
+
+    [deps]
+    pkg-b = { source = "workspace" }
+    ```
+  </Tab>
+  <Tab title="pkg-b/ara.toml">
+    ```toml
+    [project]
+    name = "pkg-b"
+    version = "0.1.0"
+
+    [deps]
+    pkg-c = { source = "workspace" }
+    ```
+  </Tab>
+  <Tab title="pkg-c/ara.toml">
+    ```toml
+    [project]
+    name = "pkg-c"
+    version = "0.1.0"
+    ```
+  </Tab>
+</Tabs>
+
+All cross-references resolve to live symlinks, so the full dependency chain `pkg-a → pkg-b → pkg-c` is available the moment `ara install` completes.
+
+## Mixing workspace and registry dependencies
+
+The root manifest and any member manifest can freely combine `workspace:` references with normal registry dependencies:
+
+```toml
+# packages/app-1/ara.toml
+[project]
+name = "app-1"
+version = "0.1.0"
+
+[deps]
+shared    = { source = "workspace" }
+react     = { source = "npm", version = "^18.0.0", kind = "prod" }
+react-dom = { source = "npm", version = "^18.0.0", kind = "peer" }
+typescript = { source = "npm", version = "^5.0.0", kind = "dev" }
+vitest    = { source = "npm", version = "^1.0.0",  kind = "dev" }
+```
+
+## The lockfile
+
+After a successful install, `ara.lock` records every dependency with its source type. Workspace members use `source = "workspace"`; registry packages use `source = "registry"`. This distinction is what lets Ara skip the network entirely for local members on subsequent installs:
+
+```toml
+version = 1
+
+[graph]
+resolver = "mvs"
+generated_at = "2025-06-03T12:00:00Z"
+graph_hash = "sha256:abc123..."
+
+[[package]]
+name = "ui"
+version = "1.0.0"
+source = "workspace"
+dependencies = []
+
+[[package]]
+name = "server"
+version = "0.1.0"
+source = "workspace"
+dependencies = ["ui"]
+
+[[package]]
+name = "zod"
+version = "3.23.8"
+source = "registry"
+package_hash = "sha256:def456..."
+integrity = "sha256:ghi789..."
+dependencies = []
+```
+
+<Warning>
+Commit `ara.lock` to version control. It is Ara's source of truth for reproducible installs — without it, resolution runs from scratch on every fresh clone.
+</Warning>

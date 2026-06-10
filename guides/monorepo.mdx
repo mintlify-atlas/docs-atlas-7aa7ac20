@@ -1,0 +1,330 @@
+---
+title: "Setting Up a Monorepo with Ara Workspaces"
+sidebarTitle: "Monorepo"
+description: "Use Ara's workspace protocol to build a monorepo with live symlinks, shared npm dependencies, and mixed manifest types across all packages."
+---
+
+Ara's workspace support is inspired by pnpm's `workspace:` protocol and designed to make cross-package development fast and friction-free. When you declare a sibling package as a workspace dependency, Ara creates a **live symlink** from `node_modules/<name>` directly to the package directory — not a copy. This means any change you make to `packages/ui/src/button.tsx` is immediately visible to `packages/server` without reinstalling anything.
+
+This guide walks through creating a monorepo from scratch, explaining each piece along the way.
+
+## Directory structure
+
+A typical Ara monorepo looks like this:
+
+```
+my-mono/
+├── package.json          ← root manifest: workspaces glob + shared npm deps
+├── ara.lock              ← single lockfile for the entire graph
+├── node_modules/
+│   ├── zod/              ← fetched from npm, shared by all packages
+│   ├── ui/               ← symlink → packages/ui/
+│   ├── server/           ← symlink → packages/server/
+│   └── shared/           ← symlink → packages/shared/
+└── packages/
+    ├── ui/
+    │   └── package.json
+    ├── server/
+    │   └── package.json
+    └── shared/
+        └── package.json  ← or ara.toml — both work
+```
+
+A single `ara install` at the root installs everything: registry packages are fetched and extracted, workspace members become symlinks, and a single `ara.lock` captures the complete resolved graph.
+
+## Setting up the monorepo
+
+<Steps>
+
+### Create the root package.json
+
+The root `package.json` does two things: it declares the `workspaces` glob so Ara discovers member packages, and it lists any shared npm dependencies that all members should share via the hoisted `node_modules/`.
+
+```json
+{
+  "name": "my-mono",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "zod": "^3.0.0"
+  }
+}
+```
+
+`"private": true` prevents the root from being accidentally published. The `workspaces` field accepts an array of glob patterns — `packages/*` matches every directory inside `packages/`.
+
+### Create the member packages
+
+Each subdirectory matched by the glob needs its own manifest. Members can use `package.json` or `ara.toml` — Ara checks for `ara.toml` first and falls back to `package.json`.
+
+```json
+// packages/shared/package.json
+{
+  "name": "shared",
+  "version": "1.0.0"
+}
+```
+
+```json
+// packages/ui/package.json
+{
+  "name": "ui",
+  "version": "1.0.0",
+  "dependencies": {
+    "shared": "workspace:*"
+  }
+}
+```
+
+```json
+// packages/server/package.json
+{
+  "name": "server",
+  "version": "0.1.0",
+  "dependencies": {
+    "ui": "workspace:*",
+    "shared": "workspace:*"
+  }
+}
+```
+
+### Understand the workspace: protocol
+
+The `workspace:` prefix tells Ara that the dependency lives in the monorepo, not in a registry. Three forms are supported:
+
+| Form | Meaning |
+|------|---------|
+| `workspace:*` | Always resolves to the local member, any version |
+| `workspace:^` | Resolves locally; replaced with `^<version>` on publish |
+| `workspace:1.2.3` | Resolves locally; pins to this exact version on publish |
+
+For development, `workspace:*` is the most common choice. It always points at the current source on disk, regardless of the version field in the member's manifest.
+
+### Run ara install from the root
+
+From the monorepo root, run a single install command:
+
+```bash
+ara install
+```
+
+Ara will:
+
+1. Parse the root `package.json` and discover `packages/*`.
+2. Read each member's manifest (`package.json` or `ara.toml`).
+3. Resolve all `workspace:` references and all registry dependencies using MVS.
+4. Create **live symlinks** in `node_modules/` for each workspace member.
+5. Fetch and extract registry packages (like `zod`) into `node_modules/`.
+6. Scan every package — including symlinked workspace members — for security patterns.
+7. Write a single `ara.lock` covering the entire resolved graph.
+
+The output looks something like:
+
+```
+Installing dependencies for my-mono v0.1.0
+  workspace member: shared -> packages/shared
+  workspace member: ui -> packages/ui
+  workspace member: server -> packages/server
+  symlink shared -> /path/to/my-mono/packages/shared
+  symlink ui -> /path/to/my-mono/packages/ui
+  symlink server -> /path/to/my-mono/packages/server
+  fetching zod@3.23.8...
+  ✓ zod@3.23.8 (sha256:...)
+Lockfile written to ara.lock
+```
+
+### Verify the live symlinks
+
+Check that workspace members are symlinks, not copies:
+
+```bash
+ls -la node_modules/ui
+# node_modules/ui -> /path/to/my-mono/packages/ui
+```
+
+Now edit `packages/ui/src/button.tsx`. The change is immediately visible to `packages/server` — no reinstall, no copy step, no watch process required.
+
+</Steps>
+
+## Cross-package references in practice
+
+Because workspace dependencies are live symlinks, the development loop is tight:
+
+```bash
+# Edit a component in packages/ui
+echo "export const version = '1.1.0';" >> packages/ui/src/index.ts
+
+# server can import it immediately — no reinstall needed
+node -e "const { version } = require('ui/src'); console.log(version)"
+# 1.1.0
+```
+
+The `ara.lock` records workspace entries with `source = "workspace"` so that the distinction between registry deps and local members is always explicit:
+
+```toml
+[[package]]
+name = "ui"
+version = "1.0.0"
+source = "workspace"
+package_hash = "workspace:packages/ui"
+
+[[package]]
+name = "zod"
+version = "3.23.8"
+source = "registry"
+package_hash = "sha256:def456..."
+```
+
+## Running scripts across workspace members
+
+Scripts are still defined per-member in each `package.json`. Run them from the member directory:
+
+```bash
+# From the monorepo root
+ara run build --profile hermetic
+# Runs the "build" script from the root package.json
+
+# From a specific member
+cd packages/server
+ara run build
+ara run test --profile restricted
+```
+
+<Note>
+Ara does not yet have a built-in "run script in all workspaces" command. To run a script across all members from the root, use a shell loop or a tool like `turbo` or `nx` on top of Ara.
+</Note>
+
+## Mixed manifests: package.json and ara.toml together
+
+Workspace members can freely mix manifest types. A member that needs advanced security policies can add an `ara.toml` without affecting other members:
+
+```
+packages/
+├── ui/
+│   └── package.json          ← standard npm manifest
+├── server/
+│   └── package.json          ← standard npm manifest
+└── shared/
+    ├── package.json          ← dependencies and scripts
+    └── ara.toml              ← security threshold + build profile
+```
+
+```toml
+# packages/shared/ara.toml
+[security]
+risk_threshold = "high"   # Only warn on High+ findings
+require_review = true
+
+[build]
+hermetic = true
+```
+
+When Ara expands workspace members, it reads `ara.toml` first. If `ara.toml` exists, its `[security]` and `[build]` settings apply to that member's install and run steps. Dependencies and scripts always come from `package.json`.
+
+<Tip>
+You only need `ara.toml` in a member if you want to enforce security thresholds or hermetic build profiles. Most members can use `package.json` alone.
+</Tip>
+
+## Optional ara.toml at the root
+
+The root can also have an `ara.toml` to apply workspace-wide security policy:
+
+```toml
+# ara.toml (root)
+[security]
+risk_threshold = "medium"   # Warn on Medium+ findings across all installs
+
+[build]
+offline_first = true         # Prefer cache over network
+```
+
+This merges with the root `package.json` at install time. The security and build settings from `ara.toml` take effect; dependencies and workspaces always come from `package.json`.
+
+## Complete working example
+
+Here is the minimal file set for a three-package monorepo you can copy and run:
+
+<Tabs>
+
+<Tab title="package.json (root)">
+```json
+{
+  "name": "my-mono",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "zod": "^3.0.0"
+  },
+  "scripts": {
+    "build": "echo 'build all'"
+  }
+}
+```
+</Tab>
+
+<Tab title="packages/shared/package.json">
+```json
+{
+  "name": "shared",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}
+```
+</Tab>
+
+<Tab title="packages/ui/package.json">
+```json
+{
+  "name": "ui",
+  "version": "1.0.0",
+  "dependencies": {
+    "shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  }
+}
+```
+</Tab>
+
+<Tab title="packages/server/package.json">
+```json
+{
+  "name": "server",
+  "version": "0.1.0",
+  "dependencies": {
+    "ui": "workspace:*",
+    "shared": "workspace:*",
+    "zod": "^3.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  }
+}
+```
+</Tab>
+
+</Tabs>
+
+Then from the root:
+
+```bash
+ara install --non-interactive
+```
+
+All three workspace members are symlinked, `zod` is fetched and extracted, and `ara.lock` is written. You're ready to build.

@@ -1,0 +1,176 @@
+---
+title: "The ara.lock Lockfile: Reproducible Installs"
+sidebarTitle: "Lockfile"
+description: "ara.lock pins every resolved dependency — versions, hashes, and security metadata — making installs byte-for-byte reproducible across machines and CI."
+---
+
+Every successful `ara install` writes a file named `ara.lock` at the root of your project. This file is the permanent record of exactly which packages were resolved, where they came from, and what their cryptographic hashes are. Combined with `package.json`, it guarantees that any machine running `ara install` — your laptop, a teammate's CI runner, a cloud build agent — produces the identical dependency graph with no floating versions and no surprises. You should commit `ara.lock` to version control.
+
+## File format
+
+`ara.lock` is a human-readable TOML file. It opens with a format version, followed by a `[graph]` section describing the resolution metadata, then a series of `[[package]]` entries — one per resolved dependency.
+
+```toml
+version = 1
+
+[graph]
+resolver      = "mvs"
+generated_at  = "2025-06-03T12:00:00Z"
+graph_hash    = "sha256:abc123def456..."
+
+[[package]]
+name         = "zod"
+version      = "3.23.8"
+source       = "npm"
+integrity    = "sha256-ghi789..."
+package_hash = "sha256-def456..."
+dependencies = []
+
+[package.security]
+risk_level = "low"
+
+[package.sbom]
+license = "MIT"
+```
+
+---
+
+## `[graph]` — Resolution metadata
+
+The `[graph]` table captures information about the resolver run that produced this lockfile.
+
+| Field | Type | Description |
+|---|---|---|
+| `resolver` | string | Always `"mvs"` — Minimum Version Selection |
+| `generated_at` | string (ISO 8601) | Timestamp of the last successful install |
+| `graph_hash` | string (sha256) | Hash of the serialized dependency graph nodes |
+
+The `graph_hash` lets you quickly detect whether the resolved graph has changed between two lockfile versions — useful in CI to assert that a merge did not silently alter your dependency tree.
+
+---
+
+## `[[package]]` — Per-package entries
+
+Each resolved package occupies one `[[package]]` block. All fields that Ara captured during install are stored here.
+
+### Core identity fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | ✅ | Package name (e.g. `"zod"`, `"@angular/core"`) |
+| `version` | ✅ | Resolved semver version string |
+| `source` | ✅ | Origin: `npm`, `github`, `git`, `url`, `workspace`, `local`, or `registry` |
+| `package_hash` | ✅ | SHA-256 hash of the downloaded tarball, prefixed `sha256-` |
+
+### Integrity and provenance fields
+
+| Field | Required | Description |
+|---|---|---|
+| `integrity` | optional | Secondary integrity hash (e.g. from the npm registry manifest) |
+| `signature` | optional | Detached package signature (reserved for future publisher verification) |
+| `repository` | optional | Source repository URL or `owner/repo` shorthand for GitHub sources |
+| `commit` | optional | Git commit SHA pinned for `git` and `github` sources |
+| `dependencies` | optional | Names of this package's own resolved dependencies |
+
+### `[package.security]` — Security scan results
+
+After Ara's built-in scanner analyzes each package, it records the overall risk level in the lockfile. This means future installs can skip re-scanning packages whose hash has not changed.
+
+```toml
+[package.security]
+risk_level = "medium"   # low | medium | high | critical
+```
+
+### `[package.sbom]` — Software bill of materials
+
+The `[package.sbom]` sub-table stores license information detected from the package.
+
+```toml
+[package.sbom]
+license = "MIT"
+```
+
+---
+
+## Real-world lockfile example
+
+The example below shows a project with two dependencies: one from npm and one pinned to a GitHub commit.
+
+```toml
+version = 1
+
+[graph]
+resolver     = "mvs"
+generated_at = "2025-06-03T14:22:00Z"
+graph_hash   = "sha256:7f3a9c..."
+
+[[package]]
+name         = "zod"
+version      = "3.23.8"
+source       = "npm"
+integrity    = "sha256-oLFr..."
+package_hash = "sha256-9e1d..."
+dependencies = []
+
+[package.security]
+risk_level = "low"
+
+[package.sbom]
+license = "MIT"
+
+[[package]]
+name         = "my-lib"
+version      = "1.4.0"
+source       = "github"
+package_hash = "sha256-cc8a..."
+repository   = "acme-org/my-lib"
+commit       = "a3f82b1d9c4e..."
+dependencies = ["zod"]
+
+[package.security]
+risk_level = "high"
+
+[package.sbom]
+license = "Apache-2.0"
+```
+
+<Warning>
+If `risk_level` is `"high"` or `"critical"` for a package, Ara prompted for approval during install. The lockfile records the risk level regardless of your decision — review it in code review.
+</Warning>
+
+---
+
+## Why commit `ara.lock`
+
+<Accordion title="Reproducibility across machines">
+Without a lockfile, Ara would re-run MVS on every install. Even though MVS is deterministic given the same constraints, registry state can change: a new patch release might be published between two developer installs. The lockfile pins every version so that the graph never drifts.
+</Accordion>
+
+<Accordion title="Security audit trail">
+The `[package.security]` block in each entry records the risk level assigned when the package was first scanned. Committing the lockfile makes security findings visible in pull-request diffs — you can see when a new dependency with a `high` risk level is introduced.
+</Accordion>
+
+<Accordion title="Integrity verification">
+Each `package_hash` is the SHA-256 of the exact tarball Ara downloaded. On subsequent installs, Ara checks the content store against these hashes before extracting. If a package has been tampered with in the store, the mismatch is caught immediately.
+</Accordion>
+
+<Accordion title="Fast reinstalls">
+Because the lockfile records which hash is expected for each package, Ara can skip the resolution phase entirely on clean reinstalls and go straight to the content store lookup.
+</Accordion>
+
+---
+
+## `--package-lock` compatibility flag
+
+Some deploy platforms (Vercel, Render, Railway, etc.) detect `package-lock.json` to decide how to install dependencies. Until those platforms add native `ara.lock` support, you can pass `--package-lock` to also generate a `package-lock.json` alongside `ara.lock`:
+
+```bash
+ara install --package-lock
+ara add react --package-lock
+```
+
+The generated `package-lock.json` uses lockfile version 3 (compatible with npm 7+). This flag is a temporary compatibility shim and will be removed once deploy platforms recognise `ara.lock` natively.
+
+<Note>
+`package-lock.json` generated by `--package-lock` reflects only the packages Ara resolved. It is not guaranteed to be semantically equivalent to what `npm install` would generate from the same `package.json`.
+</Note>

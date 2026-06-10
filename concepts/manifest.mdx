@@ -1,0 +1,181 @@
+---
+title: "Manifest Format: package.json and ara.toml"
+sidebarTitle: "Manifest"
+description: "Ara uses a hybrid manifest architecture: package.json as the primary source of truth, and an optional ara.toml for security policies and build profiles."
+---
+
+Ara embraces the JavaScript ecosystem's existing conventions by treating `package.json` as the authoritative source for your project's identity, dependencies, and scripts. No migration step is required — if your project already has a `package.json`, Ara works with it immediately. An optional `ara.toml` file extends that foundation with Ara-specific settings: security risk thresholds and sandboxed build profiles. If you never need those features, you never need to create `ara.toml` at all.
+
+## `package.json` — Primary Manifest
+
+`package.json` is the single source of truth for everything Ara needs to install and run your project. When you run `ara add zod`, Ara writes the new dependency directly to `package.json`, just as npm or Yarn would. All standard fields are read and respected.
+
+### Fields Ara reads
+
+| Field | Purpose |
+|---|---|
+| `name` | Project name |
+| `version` | Project version |
+| `dependencies` | Production dependencies |
+| `devDependencies` | Development-only dependencies |
+| `peerDependencies` | Peer requirements declared to consumers |
+| `optionalDependencies` | Optional enhancements that may be absent |
+| `scripts` | Named shell commands runnable via `ara run` |
+| `workspaces` | Glob patterns for monorepo workspace members |
+
+### Standard npm project
+
+```json
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "zod": "^3.23.0",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "scripts": {
+    "build": "tsc --strict",
+    "test": "vitest run --reporter verbose",
+    "start": "node dist/index.js"
+  }
+}
+```
+
+### Monorepo with workspace protocol
+
+Ara supports the `workspace:` protocol, inspired by pnpm. Declaring a dependency as `workspace:*` or `workspace:^` tells Ara to resolve it from a local workspace member instead of a registry. During install, workspace dependencies become live symlinks — `node_modules/lib-a` points directly to `packages/lib-a`, so source changes are immediately visible without reinstalling.
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "lib-a": "workspace:*",
+    "lib-b": "workspace:^",
+    "zod": "^3.23.0"
+  }
+}
+```
+
+<Tip>
+The `workspace:` protocol behaves the same as in pnpm. On publish, `workspace:^` is replaced with `^<version>` automatically; `workspace:*` resolves to the member and is replaced with the exact version.
+</Tip>
+
+Supported `workspace:` forms:
+
+| Form | Meaning |
+|---|---|
+| `workspace:*` | Always resolves to the local workspace member |
+| `workspace:^` | Resolves locally; replaced with `^<version>` on publish |
+| `workspace:1.2.3` | Pins to an exact version within the workspace |
+
+---
+
+## `ara.toml` — Advanced Configuration
+
+`ara.toml` is entirely optional. It does not store dependencies or scripts — those live in `package.json`. Use it only when you want to enforce project-wide security policies or declare a default sandbox profile for builds.
+
+### `[security]` section
+
+The `[security]` table controls how Ara's built-in scanner reacts to findings during install.
+
+```toml
+[security]
+risk_threshold = "high"   # Report findings at this level and above
+require_review = true      # Always prompt for manual review, even if below threshold
+```
+
+`risk_threshold` accepts four values (from least to most severe):
+
+<Tabs>
+  <Tab title="low">
+    Reports all findings — `low`, `medium`, `high`, and `critical`. Most verbose; recommended during audits.
+  </Tab>
+  <Tab title="medium">
+    Reports `medium`, `high`, and `critical` findings. Skips low-severity noise.
+  </Tab>
+  <Tab title="high">
+    Reports only `high` and `critical` findings. A practical default for most production projects.
+  </Tab>
+  <Tab title="critical">
+    Reports only `critical` findings such as `eval()` and `new Function()`. Minimal interruption.
+  </Tab>
+</Tabs>
+
+### `[build]` section
+
+The `[build]` table sets default sandboxing behaviour for scripts executed with `ara run`.
+
+```toml
+[build]
+hermetic = true        # Run builds in a hermetic sandbox (no network, deterministic clock)
+offline_first = true   # Prefer local cache; fail if a package isn't cached
+```
+
+<Note>
+`hermetic = true` activates the seccomp-BPF hermetic sandbox profile on Linux. On macOS and Windows, `ara run` executes the script without sandbox restrictions because the Linux-specific sandbox is not yet ported to other platforms.
+</Note>
+
+### Complete `ara.toml` example
+
+The example below is drawn from the Ara test fixtures and reflects a typical security-conscious project:
+
+```toml
+[security]
+risk_threshold = "high"    # Only surface High and Critical findings
+require_review = true       # Always prompt before installing flagged packages
+
+[build]
+hermetic = true             # No network access during builds
+offline_first = true        # Prefer the local content store cache
+```
+
+### Scripts-heavy project (from test fixtures)
+
+For projects that rely heavily on scripts, the `ara.toml` complements the scripts already declared in `package.json`:
+
+```toml
+[project]
+name = "scripts-app"
+version = "0.1.0"
+
+[scripts]
+build = "tsc --strict"
+test  = "vitest run --reporter verbose"
+lint  = "eslint src/ --fix"
+start = "node dist/index.js"
+"pre:build" = "rm -rf dist"
+```
+
+<Note>
+If `ara.toml` defines `[scripts]`, those entries are merged with scripts from `package.json`. However, Ara recommends keeping all scripts in `package.json` for ecosystem compatibility — `ara.toml` scripts are intended for advanced sandboxed profiles only.
+</Note>
+
+---
+
+## How the two files interact
+
+<Accordion title="Merge rules: package.json + ara.toml">
+When Ara starts, it parses `package.json` first and builds the full manifest in memory. If `ara.toml` exists, it is layered on top:
+
+1. `package.json` provides: name, version, all dependency groups, scripts, and workspaces.
+2. `ara.toml` provides: security thresholds, build profiles, and any additional script entries.
+3. Fields only in `package.json` (e.g. `description`, `license`, `main`) are preserved verbatim and written back when Ara modifies `package.json`.
+4. Neither file can override the other's dependency list — dependencies always live in `package.json`.
+</Accordion>
+
+<Accordion title="When do I actually need ara.toml?">
+You need `ara.toml` only if you want to:
+
+- Set a project-wide `risk_threshold` so that Ara automatically blocks packages above a severity level.
+- Enable `require_review = true` to always prompt for human approval regardless of findings.
+- Set `hermetic = true` to lock builds into a sandboxed environment by default.
+- Use `offline_first = true` to prevent installs from hitting the network.
+
+For a plain npm-style project that just wants fast, secure installs, `package.json` alone is sufficient.
+</Accordion>

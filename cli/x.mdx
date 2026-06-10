@@ -1,0 +1,101 @@
+---
+title: "ara x — Execute a Package Binary Without Installing It"
+sidebarTitle: "x"
+description: "Download a package to an isolated temp directory, resolve its dependencies, find its binary, execute it under the open sandbox profile, then clean up. Like npx or pnpm dlx."
+---
+
+`ara x` lets you run a package's binary without adding it to your project's `package.json` or `node_modules/`. It is the Ara equivalent of `npx` or `pnpm dlx`. When invoked, it creates a private temporary directory, installs the requested package into it (non-interactively), resolves the binary entry point, executes it under the `open` sandbox profile, and then deletes the temporary environment — leaving your project completely untouched.
+
+## Usage
+
+```bash
+ara x <package> [args...]
+```
+
+`<package>` accepts the same spec formats as `ara add` — a bare npm package name, a versioned name like `create-next-app@latest`, or any other supported specifier. Everything after the package name is forwarded as arguments to the binary.
+
+## How it works
+
+1. A unique temporary directory is created at `~/.ara/dlx/<timestamp>-<pid>/`.
+2. A minimal `package.json` (`{ "name": "ara-x-temp", "private": true }`) is written there.
+3. `ara add` is called in non-interactive mode to install the specified package into that temp directory.
+4. Ara looks for the binary in `node_modules/.bin/` — first by the bare package name, then by the first available entry if the name doesn't match exactly.
+5. The binary is executed using the `open` sandbox profile (network enabled, subprocesses allowed) with `node_modules/.bin` prepended to `PATH`.
+6. The temporary directory is removed after the binary exits, whether it succeeds or fails.
+
+<Note>
+  The `open` sandbox profile is used because scaffolding tools and generators typically need both network access (to download templates) and the ability to spawn child processes. See [`ara run`](/cli/run) for a description of all sandbox profiles.
+</Note>
+
+## Examples
+
+<CodeGroup>
+
+```bash Scaffolding tools
+# Create a new Next.js app
+ara x create-next-app my-app
+
+# With additional CLI options
+ara x create-next-app my-app --typescript --tailwind
+
+# Create a Vite project
+ara x create-vite my-app --template react-ts
+```
+
+```bash UI component libraries
+# Initialize shadcn/ui in your project
+ara x shadcn init
+
+# Initialize with a specific preset
+ara x shadcn init --preset bdvw9FeS
+
+# Add a shadcn component
+ara x shadcn add button
+```
+
+```bash Versioned execution
+# Run a specific version of a tool
+ara x create-next-app@14.0.0 my-app
+
+# Run the latest tag explicitly
+ara x create-react-app@latest my-app
+```
+
+```bash Code generation and utilities
+# Generate a TypeScript project with ts-node
+ara x ts-node --version
+
+# Run a one-off script formatter
+ara x prettier --write src/
+```
+
+</CodeGroup>
+
+## Argument forwarding
+
+All arguments after the package name are forwarded verbatim to the binary. Arguments that contain spaces or shell-special characters are automatically quoted:
+
+```bash
+ara x shadcn init --preset bdvw9FeS
+#   ^ package     ^ args forwarded as-is
+```
+
+## Sandbox behavior
+
+`ara x` always runs under the `open` profile, which means:
+
+- **Network access** is enabled — needed for tools that download templates or packages at runtime.
+- **Subprocess spawning** is allowed — many scaffolding tools shell out to `git`, `npm`, or other binaries.
+- **No syscall filtering** on non-Linux platforms — on macOS or Windows the binary runs with no restrictions (same degradation as `ara run`).
+
+<Warning>
+  Because `ara x` installs and executes arbitrary packages, the same security scanning that applies to `ara add` runs here too — but in **non-interactive** mode. If the package has security findings, they are printed as warnings and the binary is still executed. Review packages carefully before running them with `ara x`.
+</Warning>
+
+## Cleanup
+
+The temporary install directory is always removed after execution, even if the binary exits with a non-zero code or if an error occurs during installation. If Ara itself crashes mid-execution, the leftover directory can be found at `~/.ara/dlx/` and deleted manually.
+
+<Tip>
+  Unlike `npx`, `ara x` does not search your global `node_modules` or check if the binary is already installed locally. It always performs a fresh isolated install, so you always get the version you asked for.
+</Tip>

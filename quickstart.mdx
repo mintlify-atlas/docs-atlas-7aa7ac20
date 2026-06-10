@@ -1,47 +1,186 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Quickstart: Install Packages and Run Scripts with Ara"
+sidebarTitle: "Quickstart"
+description: "Install dependencies into an existing npm project, add a new package, review the generated lockfile, and run a sandboxed build script using the Ara CLI."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+Ara works with any existing `package.json` project — no migration step, no new manifest format to learn. All you need is a directory with a `package.json` and a working internet connection. This guide walks you through installing your dependencies, adding a new package, understanding the security prompts you will see along the way, and running a script.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Point Ara at an existing project">
+    Start from any npm project. If you do not have one handy, create a minimal one:
 
     ```bash
-    npm install your-package
+    mkdir my-app && cd my-app
+    npm init -y
     ```
+
+    Ara reads `package.json` natively as its primary source of truth. You do not need an `ara.toml` to get started — that file is only for advanced configuration like security thresholds and hermetic build profiles.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Run ara install">
+    From the project root, run:
 
     ```bash
-    your-cli init
+    ara install
     ```
+
+    Ara works through the install in several phases:
+
+    1. **Parse** — reads `package.json` for dependencies, devDependencies, and workspace globs.
+    2. **Resolve** — applies Minimum Version Selection (MVS) to produce a deterministic dependency graph.
+    3. **Fetch** — downloads tarballs from the npm registry (or other sources).
+    4. **Analyze** — scans every JS/TS file in every fetched package against 17+ security patterns.
+    5. **Prompt** — asks for your approval on any findings (unless `--non-interactive`).
+    6. **Extract** — unpacks approved packages into `node_modules` and the content-addressed store.
+    7. **Lock** — writes `ara.lock` with the full resolved graph.
+
+    <Note>
+      On a project with no suspicious dependencies, Ara completes silently. The prompts only appear when the analyzer finds something worth flagging.
+    </Note>
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Understand the security prompts">
+    If any fetched package triggers a finding, Ara pauses and shows you exactly what it found before proceeding. For example, a package that uses `eval()` and reads a credential environment variable would produce output like this:
+
+    ```text
+    🔍 Scanning some-pkg@2.1.0...
+      ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+      ⚠  credential-access (high) — process.env.AWS_SECRET_KEY in lib/config.js:10
+
+    Allow some-pkg@2.1.0?
+      [y] Yes, install anyway
+      [n] No, skip this package
+      [s] Sandbox (restrict at runtime)
+    > _
+    ```
+
+    You choose how to handle each flagged package individually. The finding details include the pattern ID, its severity (`critical`, `high`, `medium`, `low`), and the exact file and line number.
+
+    **In CI pipelines**, pass `--non-interactive` to skip prompts and install everything:
 
     ```bash
-    your-cli start
+    ara install --non-interactive
     ```
+
+    <Tip>
+      You can tighten the threshold so that only `high` and `critical` findings trigger prompts. Add an `ara.toml` to your project root:
+
+      ```toml
+      [security]
+      risk_threshold = "high"
+      ```
+    </Tip>
   </Step>
+
+  <Step title="Add a new package with ara add">
+    To install a package and save it to `package.json` in one step, use `ara add`:
+
+    ```bash
+    ara add zod
+    ```
+
+    Ara resolves the latest version from the npm registry, fetches and scans it, prompts for approval if needed, extracts it to `node_modules`, and updates both `package.json` and `ara.lock`.
+
+    You can specify an exact version, a range, or a dev dependency:
+
+    ```bash
+    ara add zod@^3.23.0            # semver range, resolved to latest matching
+    ara add --save-dev typescript   # saved as devDependency
+    ara add react zod typescript    # multiple packages at once
+    ```
+
+    <Note>
+      `ara install zod` is an alias for `ara add zod`. Both spellings work.
+    </Note>
+  </Step>
+
+  <Step title="Inspect the lockfile">
+    After a successful install, Ara writes `ara.lock` in the project root. Commit this file to your repository — it guarantees that any other machine or CI run produces exactly the same dependency graph.
+
+    ```bash
+    cat ara.lock
+    ```
+
+    The lockfile is a TOML file. Each installed package has an entry like this:
+
+    ```toml
+    version = 1
+
+    [graph]
+    resolver = "mvs"
+    generated_at = "2025-06-03T12:00:00Z"
+    graph_hash = "sha256:abc123..."
+
+    [[package]]
+    name = "zod"
+    version = "3.23.8"
+    source = "npm"
+    package_hash = "sha256:def456..."
+    integrity = "sha256:ghi789..."
+    dependencies = []
+    ```
+
+    Every entry records the resolved `version`, its `source` (registry, workspace, git, etc.), a `package_hash` for the tarball stored in the content-addressed store, and an `integrity` hash for verification. There are no floating versions and no `^` ranges in the lockfile — everything is pinned.
+  </Step>
+
+  <Step title="Run a script with ara run">
+    If your `package.json` defines scripts, you can run them through Ara:
+
+    ```bash
+    ara run build
+    ```
+
+    By default this uses the `runtime` (open) sandbox profile — no restrictions. On Linux, you can opt into stricter profiles:
+
+    ```bash
+    ara run build --profile hermetic    # no network, deterministic clock, minimal syscalls
+    ara run test --profile restricted   # safe syscalls, read-only filesystem, no network
+    ```
+
+    The three profiles are:
+
+    | Profile | What it allows |
+    |---------|---------------|
+    | `open` (or `runtime`) | No restrictions — full access to the system |
+    | `restricted` | Safe syscalls only, read-only filesystem, no network |
+    | `hermetic` | Minimal syscall set, no network, deterministic clock |
+
+    <Warning>
+      Sandbox profiles only apply on **Linux x86\_64**. On macOS and Windows, `ara run` executes the script without restrictions regardless of the `--profile` flag you pass.
+    </Warning>
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## What you now have
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+After following this guide your project directory looks like this:
+
+```text
+my-app/
+├── package.json        ← updated with any new packages you added
+├── ara.lock            ← committed, deterministic resolved graph
+└── node_modules/
+    └── zod/            ← extracted and stored by SHA-256 hash
+```
+
+You have installed dependencies with security scanning, added a package with `ara add`, reviewed a content-addressed lockfile, and run a script through the sandboxed executor.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="CLI Reference" icon="terminal" href="/cli/install">
+    Full documentation for every `ara` subcommand, flag, and spec format.
+  </Card>
+  <Card title="Security Overview" icon="shield-halved" href="/security/overview">
+    Learn what the analyzer detects, how findings are reported, and how to configure thresholds.
+  </Card>
+  <Card title="Lockfile Format" icon="lock" href="/concepts/lockfile">
+    Understand the `ara.lock` schema, graph hashes, and how reproducibility is guaranteed.
+  </Card>
+  <Card title="Migrating from npm" icon="arrow-right-arrow-left" href="/guides/migrating-from-npm">
+    Drop-in compatibility notes and the differences you will notice coming from npm or pnpm.
+  </Card>
+</CardGroup>

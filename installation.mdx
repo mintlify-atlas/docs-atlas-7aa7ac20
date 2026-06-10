@@ -1,0 +1,181 @@
+---
+title: "Install the Ara Binary on Linux, macOS, or Windows"
+sidebarTitle: "Installation"
+description: "Download the pre-built Ara binary from GitHub Releases or compile it from source using Cargo. Covers Linux, macOS, and Windows setup steps."
+---
+
+Ara ships as a single self-contained binary named `ara`. There are no runtime dependencies, no Node.js version to manage, and no global `node_modules` to worry about. The recommended way to get it is to download a pre-built release from GitHub. If you prefer to build from source, that works too — you just need a Rust toolchain.
+
+<Note>
+  The seccomp-BPF sandbox used by `ara run` is **Linux x86_64 only**. On macOS and Windows, `ara run` executes your scripts without syscall restrictions — all other commands (`install`, `add`, `analyze`, `x`, `gc`) work identically across all three platforms.
+</Note>
+
+## Download from GitHub Releases
+
+Pre-built binaries are published to [github.com/ara-home/ara/releases](https://github.com/ara-home/ara/releases) for every tagged version. The current release is **v0.11.0**. Five targets are available:
+
+| Target | Platform |
+|--------|----------|
+| `x86_64-unknown-linux-gnu` | Linux x86\_64 (glibc) |
+| `x86_64-unknown-linux-musl` | Linux x86\_64 (musl / Alpine) |
+| `aarch64-apple-darwin` | macOS Apple Silicon |
+| `x86_64-apple-darwin` | macOS Intel |
+| `x86_64-pc-windows-msvc` | Windows x86\_64 |
+
+### Linux (x86\_64)
+
+<Steps>
+  <Step title="Download the binary archive">
+    Go to the [latest release page](https://github.com/ara-home/ara/releases/latest) and download the archive for your Linux variant:
+
+    - `ara-x86_64-unknown-linux-gnu.tar.gz` — for standard distros (Ubuntu, Debian, Fedora, Arch)
+    - `ara-x86_64-unknown-linux-musl.tar.gz` — for Alpine Linux or any musl-based system
+
+    ```bash
+    # Example for glibc Linux — replace the version tag as needed
+    curl -LO https://github.com/ara-home/ara/releases/download/v0.11.0/ara-x86_64-unknown-linux-gnu.tar.gz
+    ```
+  </Step>
+  <Step title="Extract the archive">
+    ```bash
+    tar -xzf ara-x86_64-unknown-linux-gnu.tar.gz
+    ```
+  </Step>
+  <Step title="Move the binary into your PATH">
+    ```bash
+    sudo mv ara /usr/local/bin/ara
+    sudo chmod +x /usr/local/bin/ara
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    ara --version
+    ```
+
+    Expected output:
+
+    ```text
+    ara 0.11.0
+    ```
+  </Step>
+</Steps>
+
+### macOS
+
+<Steps>
+  <Step title="Download the binary archive">
+    From the [latest release page](https://github.com/ara-home/ara/releases/latest), download the archive that matches your Mac:
+
+    - `ara-aarch64-apple-darwin.tar.gz` — Apple Silicon (M1, M2, M3, M4)
+    - `ara-x86_64-apple-darwin.tar.gz` — Intel Mac
+
+    ```bash
+    # Example for Apple Silicon
+    curl -LO https://github.com/ara-home/ara/releases/download/v0.11.0/ara-aarch64-apple-darwin.tar.gz
+    ```
+  </Step>
+  <Step title="Extract the archive">
+    ```bash
+    tar -xzf ara-aarch64-apple-darwin.tar.gz
+    ```
+  </Step>
+  <Step title="Move the binary into your PATH">
+    ```bash
+    mv ara /usr/local/bin/ara
+    chmod +x /usr/local/bin/ara
+    ```
+  </Step>
+  <Step title="Allow the binary on first run (Gatekeeper)">
+    macOS may quarantine the downloaded binary. To clear the quarantine flag:
+
+    ```bash
+    xattr -d com.apple.quarantine /usr/local/bin/ara
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    ara --version
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  On macOS, `ara run` executes scripts without any sandbox restrictions. The seccomp-BPF profiles (`hermetic`, `restricted`) are Linux-only and degrade to the `open` (unrestricted) profile on macOS. All other commands are fully functional.
+</Warning>
+
+### Windows (x86\_64)
+
+<Steps>
+  <Step title="Download the binary archive">
+    From the [latest release page](https://github.com/ara-home/ara/releases/latest), download:
+
+    - `ara-x86_64-pc-windows-msvc.zip`
+  </Step>
+  <Step title="Extract the archive">
+    Right-click the `.zip` file and select **Extract All**, or use PowerShell:
+
+    ```powershell
+    Expand-Archive ara-x86_64-pc-windows-msvc.zip -DestinationPath .
+    ```
+  </Step>
+  <Step title="Add the binary to your PATH">
+    Move `ara.exe` to a directory that is already on your `PATH`, such as `C:\Windows\System32`, or add its current directory to your user `PATH` via **System Properties → Environment Variables**.
+  </Step>
+  <Step title="Verify the installation">
+    ```powershell
+    ara --version
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  On Windows, `ara run` executes scripts without sandbox restrictions. Seccomp-BPF is Linux-specific and has no Windows equivalent yet. All other commands work normally.
+</Warning>
+
+---
+
+## Build from source
+
+Building from source requires a working Rust toolchain. If you do not have Rust installed, get it from [rustup.rs](https://rustup.rs).
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/ara-home/ara.git
+    cd ara
+    ```
+  </Step>
+  <Step title="Build and install the binary">
+    The Cargo manifest for the `ara` binary lives in `src/Cargo.toml`. Install it directly to your Cargo bin directory (`~/.cargo/bin` by default, which should already be on your `PATH` if you installed Rust via rustup):
+
+    ```bash
+    cargo install --path src/
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    ara --version
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  For a faster build that skips dev-dependencies and benchmarks, you can also compile in release mode and copy the binary manually:
+
+  ```bash
+  cargo build --release --manifest-path src/Cargo.toml
+  sudo cp target/release/ara /usr/local/bin/ara
+  ```
+</Tip>
+
+---
+
+## Shell completion (optional)
+
+Ara uses [clap](https://docs.rs/clap) for its CLI, which can generate shell completions. Completion generation is not yet exposed as a built-in subcommand, but it is on the roadmap.
+
+---
+
+## Next steps
+
+Once `ara --version` prints successfully, head over to the [Quickstart](/quickstart) to run your first secure install.

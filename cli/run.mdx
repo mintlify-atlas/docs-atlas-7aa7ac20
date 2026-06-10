@@ -1,0 +1,157 @@
+---
+title: "ara run — Execute Scripts in a Sandboxed Environment"
+sidebarTitle: "run"
+description: "Run a script defined in package.json or ara.toml under a seccomp-BPF sandbox profile: open, restricted, hermetic, or custom. Linux x86_64 only for sandbox enforcement."
+---
+
+`ara run` executes a named script from your project's `package.json` (or `ara.toml`) inside a configurable sandbox. By wrapping the process in a Linux seccomp-BPF filter, Ara can restrict which syscalls the script is allowed to make — limiting network access, filesystem mutations, or clock reads depending on the profile you choose. The `node_modules/.bin` directory is automatically prepended to `PATH` so locally installed binaries like `tsc`, `eslint`, or `vitest` are found without any extra configuration.
+
+## Usage
+
+```bash
+ara run <script> [--profile <profile>]
+```
+
+`<script>` must match a key in the `scripts` section of your `package.json` or `ara.toml`.
+
+## Flags
+
+<ParamField path="--profile" type="string" default="runtime">
+  The sandbox profile to apply when executing the script. Accepted values are `open` (alias: `runtime`), `restricted`, `hermetic`, and `custom`. See [Profiles](#profiles) below for details.
+</ParamField>
+
+## Profiles
+
+Ara provides four built-in sandbox profiles that trade off between isolation and permissiveness:
+
+<Tabs>
+  <Tab title="open / runtime">
+    **Default profile.** The script runs with network access enabled and subprocess spawning allowed. Use this for development servers, scaffolding tools, or any script that needs to reach the internet or fork child processes.
+
+    ```bash
+    ara run start
+    ara run start --profile open
+    ara run start --profile runtime  # identical alias
+    ```
+
+    Equivalent `ara.toml` entry:
+    ```toml
+    [scripts]
+    start = "node server.js"
+    ```
+  </Tab>
+  <Tab title="restricted">
+    Network access is disabled and subprocess spawning is blocked. The filesystem is accessible in read-only mode. Use this for linters, type-checkers, or any tooling that only needs to read source files.
+
+    ```bash
+    ara run lint --profile restricted
+    ara run typecheck --profile restricted
+    ```
+  </Tab>
+  <Tab title="hermetic">
+    Minimal syscall set with no network access and a deterministic clock. Hermetic builds produce the same output regardless of when they are run, making them suitable for reproducible build systems and content-hashed artifacts.
+
+    ```bash
+    ara run build --profile hermetic
+    ara run bundle --profile hermetic
+    ```
+
+    Enable hermetic mode globally from `ara.toml`:
+    ```toml
+    [build]
+    hermetic = true
+    ```
+  </Tab>
+  <Tab title="custom">
+    Starts from the same restricted defaults as `restricted` but is intended as a base for future profile customisation. Currently behaves identically to `restricted`.
+
+    ```bash
+    ara run build --profile custom
+    ```
+  </Tab>
+</Tabs>
+
+## Profile comparison
+
+| Profile | Network | Spawn subprocesses | Deterministic clock |
+|---------|---------|-------------------|---------------------|
+| `open` / `runtime` | ✅ | ✅ | ❌ |
+| `restricted` | ❌ | ❌ | ❌ |
+| `hermetic` | ❌ | ❌ | ✅ |
+| `custom` | ❌ | ❌ | ❌ |
+
+## Script resolution
+
+Ara looks up the script name in this order:
+
+1. The `[scripts]` section of `ara.toml` (if it exists).
+2. The `scripts` object in `package.json`.
+
+This means any existing `package.json` scripts work with `ara run` immediately, with no migration required.
+
+```json
+{
+  "scripts": {
+    "build": "tsc --noEmit && esbuild src/index.ts --bundle --outdir=dist",
+    "test": "vitest run",
+    "lint": "eslint src"
+  }
+}
+```
+
+```bash
+ara run build                     # open profile (default)
+ara run test --profile restricted
+ara run lint --profile restricted
+```
+
+## Examples
+
+<CodeGroup>
+
+```bash Development scripts
+# Start a dev server (needs network)
+ara run dev
+ara run dev --profile open
+
+# Run tests without network access
+ara run test --profile restricted
+
+# Type-check only (no side effects needed)
+ara run typecheck --profile restricted
+```
+
+```bash Build scripts
+# Reproducible build — no network, deterministic clock
+ara run build --profile hermetic
+
+# Bundle with esbuild
+ara run bundle --profile hermetic
+```
+
+```bash CI pipeline example
+# In a CI YAML step — hermetic build, then restricted tests
+ara run build --profile hermetic
+ara run test --profile restricted
+ara run lint --profile restricted
+```
+
+</CodeGroup>
+
+## PATH and bin links
+
+Before executing the script, Ara constructs a `PATH` by prepending the absolute path to `node_modules/.bin`. This ensures locally installed binaries take precedence over globally installed ones:
+
+```
+/home/user/my-app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin
+```
+
+No shell configuration or `npx` wrapper is needed to invoke project-local tools.
+
+<Warning>
+  **Linux x86_64 only.** The seccomp-BPF sandbox filter is written for x86_64 Linux syscall numbers. On macOS, Windows, or other architectures, `ara run` degrades gracefully — the script runs without any syscall restrictions. The `--profile` flag is accepted but has no enforcement effect on non-Linux platforms.
+</Warning>
+
+<Note>
+  Ara does **not** run npm lifecycle scripts (`preinstall`, `postinstall`, `prepare`, etc.) during package installation. `ara run` only executes scripts you explicitly invoke by name.
+</Note>

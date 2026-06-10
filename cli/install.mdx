@@ -1,0 +1,173 @@
+---
+title: "ara install — Install Project Dependencies Securely"
+sidebarTitle: "install"
+description: "Install all dependencies from package.json with security scanning, MVS resolution, and content-addressed caching. Supports --force, --offline, --non-interactive, and --package-lock flags."
+---
+
+`ara install` is the primary way to bring a project's dependencies to life. With no arguments it reads your `package.json` as the source of truth, resolves every dependency using Minimum Version Selection (MVS), scans each package for security issues before extraction, and writes a deterministic `ara.lock`. When called with one or more package specifiers it acts as an alias for `ara add`, installing those packages directly and updating `package.json` and the lockfile in a single step.
+
+## Usage
+
+```bash
+ara install [specs...] [flags]
+```
+
+| Form | Behavior |
+|------|----------|
+| `ara install` | Installs all dependencies declared in `package.json` |
+| `ara install <spec>` | Alias for `ara add <spec>` — installs a specific package |
+| `ara install <spec1> <spec2>` | Installs multiple packages at once |
+
+## Flags
+
+<ParamField path="--save-dev" type="boolean" default="false">
+  Save the installed package(s) under `devDependencies` in `package.json`. Has no effect when installing from the manifest with no arguments.
+</ParamField>
+
+<ParamField path="--save-peer" type="boolean" default="false">
+  Save the installed package(s) under `peerDependencies` in `package.json`.
+</ParamField>
+
+<ParamField path="--save-optional" type="boolean" default="false">
+  Save the installed package(s) under `optionalDependencies` in `package.json`.
+</ParamField>
+
+<ParamField path="--range" type="string" default="exact">
+  Controls the version range prefix written to `package.json` when adding a new package. Accepted values:
+  - `exact` (default) — writes the resolved version as-is, e.g. `1.2.3`
+  - `caret` — prefixes with `^`, e.g. `^1.2.3`
+  - `patch` — prefixes with `~`, e.g. `~1.2.3`
+</ParamField>
+
+<ParamField path="--force" type="boolean" default="false">
+  Re-download the package even when a cached copy already exists in the content-addressed store. Useful when you suspect the cached tarball is stale or corrupted.
+</ParamField>
+
+<ParamField path="--refresh" type="boolean" default="false">
+  Bypass the cache specifically for mutable references such as branch names and tags. This is distinct from `--force`: it only re-fetches when the reference could point to a different commit than what is cached.
+</ParamField>
+
+<ParamField path="--offline" type="boolean" default="false">
+  Fail immediately if any required package is not present in the local cache. Useful in air-gapped environments to ensure no outbound network calls are made.
+</ParamField>
+
+<ParamField path="--non-interactive" type="boolean" default="false">
+  Suppress all interactive prompts. Security findings are printed to stdout but packages are approved automatically. Pass this flag in CI pipelines and automated scripts.
+</ParamField>
+
+<ParamField path="--package-lock" type="boolean" default="false">
+  Generate a `package-lock.json` (lockfile version 3) alongside `ara.lock`. This is a **temporary compatibility flag** for deploy platforms that do not yet recognize `ara.lock`. It will be removed once those platforms add native `ara.lock` support.
+</ParamField>
+
+## The install flow
+
+When you run `ara install` with no arguments, Ara executes an eight-step pipeline:
+
+1. **Parse** — reads `package.json` as the primary manifest. If an `ara.toml` exists, advanced settings such as security thresholds are merged in.
+2. **Expand workspaces** — globs `workspaces` patterns and creates implicit dependency entries for each discovered member directory.
+3. **Resolve** — runs MVS over every dependency to select the minimum version that satisfies all constraints. Circular dependencies are detected and warned about.
+4. **Fetch or symlink** — workspace members become live symlinks in `node_modules/`; all other packages are downloaded as tarballs from the appropriate backend.
+5. **Analyze** — each package's source files are scanned against 16+ security patterns including `eval()`, `child_process`, prototype pollution, credential access, and obfuscated code.
+6. **Prompt** — if suspicious patterns are found and `--non-interactive` is not set, Ara pauses and asks you to allow, deny, or sandbox each flagged package.
+7. **Extract** — approved packages are extracted into `node_modules/` and stored in the content-addressed store at `~/.ara/store/`.
+8. **Lock** — the fully resolved dependency graph is written to `ara.lock` for reproducible future installs.
+
+When installing specific packages (`ara install <spec>`), the same pipeline applies per-package, then `package.json` and `ara.lock` are updated at the end.
+
+<Note>
+  If a `ara.lock` already exists and every entry matches the resolved graph, and every package directory is present in `node_modules/`, Ara exits early with **"Lockfile is up to date. Nothing to install."** — no network requests are made.
+</Note>
+
+## Examples
+
+<CodeGroup>
+
+```bash Install all dependencies
+# Standard install — interactive security prompts
+ara install
+```
+
+```bash CI install — no prompts
+ara install --non-interactive
+```
+
+```bash Install with package-lock.json compatibility
+ara install --non-interactive --package-lock
+```
+
+```bash Force re-download of all packages
+ara install --force
+```
+
+```bash Install offline (fail if not cached)
+ara install --offline
+```
+
+```bash Install a specific package (alias for ara add)
+ara install zod
+ara install react@18.2.0 typescript --save-dev
+```
+
+</CodeGroup>
+
+## Manifest merging
+
+Ara uses a hybrid manifest strategy:
+
+- **`package.json`** — source of truth for `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `scripts`, and `workspaces`.
+- **`ara.toml`** — optional file for advanced settings only (`[security]` thresholds, `[build]` profiles). Dependency and script fields in `ara.toml` are ignored when `package.json` is present.
+
+```toml
+# ara.toml — security + build config only
+[security]
+risk_threshold = "high"   # only warn on High+ findings
+require_review = true
+
+[build]
+hermetic = true
+```
+
+<Tip>
+  Existing npm projects work with zero migration. Just run `ara install` in any directory that has a `package.json`.
+</Tip>
+
+## Workspace support
+
+Projects with a `workspaces` field in `package.json` are fully supported. Workspace members are installed as live symlinks — changes to a member's source files are immediately visible to consumers without reinstalling.
+
+```json
+{
+  "name": "my-mono",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "zod": "^3.0.0"
+  }
+}
+```
+
+```bash
+ara install --non-interactive
+# ui    → symlink → packages/ui
+# server → symlink → packages/server
+# zod   → fetched and extracted normally
+```
+
+## Security prompt example
+
+```
+🔍 Scanning malicious-pkg@1.0.0...
+  ⚠  eval-usage (critical) — eval() call in lib/utils.js:42
+  ⚠  credential-access (high) — process.env access in lib/config.js:10
+
+Allow malicious-pkg@1.0.0?
+  [y] Yes, install anyway
+  [n] No, skip this package
+  [s] Sandbox (restrict at runtime)
+> n
+✗ malicious-pkg@1.0.0 — denied
+```
+
+<Warning>
+  The seccomp-BPF sandbox is only available on Linux x86_64. On other platforms, `ara run` will execute scripts without syscall restrictions. The install pipeline's security scanning works on all platforms regardless.
+</Warning>
